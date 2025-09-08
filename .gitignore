@@ -32,3 +32,10 @@ build/
 *.pid
 *.seed
 *.tgz
+
+# SQLite database
+data.db
+data.db-shm
+data.db-wal
+*.sqlite
+*.sqlite-journal

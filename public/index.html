@@ -1,0 +1,94 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>OpenAI Status (Lite OTel)</title>
+    <style>
+      body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#0b0f14;color:#d9e1ea;margin:0;padding:24px}
+      h1{font-size:20px;margin:0 0 16px}
+      .row{display:flex;gap:16px;flex-wrap:wrap}
+      .card{background:#111827;border:1px solid #243244;border-radius:12px;padding:16px;min-width:260px;flex:1}
+      .k{color:#93c5fd}.v{color:#e5e7eb}.ok{color:#34d399}.bad{color:#fb7185}
+      table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid #1f2937;padding:6px 8px;text-align:left;font-size:13px}
+      .muted{color:#9ca3af}.pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#1f2937}
+      footer{margin-top:32px;font-size:12px;color:#6b7280}
+      th[data-k]{cursor:pointer}
+    </style>
+  </head>
+  <body>
+  <h1 style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">OpenAI Status (Lite OTel) <span id="since" class="muted"></span>
+      <span style="flex:1 1 auto"></span>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <label class="muted" style="font-size:12px;display:flex;align-items:center;gap:4px">Preset:
+          <select id="windowSelect" style="background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:4px 6px;font-size:12px">
+            <option value="15">15m</option><option value="30">30m</option><option value="60" selected>60m</option><option value="180">3h</option><option value="720">12h</option><option value="1440">24h</option><option value="4320">3d</option><option value="10080">7d</option><option value="20160">14d</option><option value="43200">30d</option><option value="129600">90d</option>
+          </select>
+        </label>
+        <label class="muted" style="font-size:12px;display:flex;flex-direction:column;gap:2px"><span>From:</span><input id="fromTs" type="datetime-local" style="background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:4px 6px;font-size:12px" /></label>
+        <label class="muted" style="font-size:12px;display:flex;flex-direction:column;gap:2px"><span>To:</span><input id="toTs" type="datetime-local" style="background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:4px 6px;font-size:12px" /></label>
+        <button id="applyRange" style="background:#2563eb;border:1px solid #1d4ed8;color:#e5e7eb;border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer">Apply</button>
+        <label class="muted" style="font-size:12px;display:flex;align-items:center;gap:4px">Endpoint:
+          <select id="endpointFilter" size="1" style="min-width:200px;background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:4px 6px;font-size:12px"></select>
+        </label>
+        <button id="exportCsv" style="background:#1f2937;border:1px solid #243244;color:#e5e7eb;border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer">CSV</button>
+        <button id="exportJson" style="background:#1f2937;border:1px solid #243244;color:#e5e7eb;border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer">JSON</button>
+      </div>
+    </h1>
+  <div style="display:flex;gap:12px;margin-top:8px;align-items:center"><button id="viewSummary" class="pill" style="cursor:pointer;background:#2563eb;border:none">Summary</button><button id="viewTraces" class="pill" style="cursor:pointer">Traces</button><span id="lastRefresh" class="muted" style="margin-left:auto;font-size:11px"></span></div>
+    <div class="row" id="cards"></div>
+    <div id="tracesContainer" style="display:none;margin-top:16px">
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px;font-size:12px">
+        <label class="muted" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="errorsOnly"/> Errors only</label>
+        <label class="muted" style="display:flex;align-items:center;gap:4px">Slow >= <input type="number" id="slowMs" min="0" placeholder="ms" style="width:70px;background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:4px;padding:2px 4px;font-size:12px"/></label>
+        <button id="applyTraceFilters" style="background:#1f2937;border:1px solid #243244;color:#e5e7eb;border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer">Apply Filters</button>
+        <div style="margin-left:auto;display:flex;gap:6px;align-items:center">
+          <button id="prevPage" disabled style="background:#1f2937;border:1px solid #243244;color:#e5e7eb;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer">Prev</button>
+          <button id="nextPage" disabled style="background:#1f2937;border:1px solid #243244;color:#e5e7eb;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer">Next</button>
+          <button id="exportTraceCsv" style="background:#1f2937;border:1px solid #243244;color:#e5e7eb;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer">Trace CSV</button>
+          <button id="exportTraceJson" style="background:#1f2937;border:1px solid #243244;color:#e5e7eb;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer">Trace JSON</button>
+          <button id="exportTraceAllCsv" style="background:#1f2937;border:1px solid #243244;color:#e5e7eb;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer">All CSV</button>
+          <button id="exportTraceAllJson" style="background:#1f2937;border:1px solid #243244;color:#e5e7eb;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer">All JSON</button>
+        </div>
+      </div>
+      <div style="overflow:auto;max-height:60vh;border:1px solid #243244;border-radius:8px">
+        <table id="tracesTable" style="width:100%;font-size:12px">
+          <thead style="position:sticky;top:0;background:#111827"><tr id="traceHeaderRow"><th data-k="iso">Time (UTC)</th><th data-k="status">Status</th><th data-k="ok">OK</th><th data-k="latencyMs">Latency(ms)</th><th data-k="endpoint">Endpoint</th><th data-k="model">Model</th><th data-k="region">Region</th><th data-k="errType">Error</th><th data-k="tokensTotal">Tokens</th><th data-k="respBytes">Resp Bytes</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="traceMeta" class="muted" style="margin-top:6px;font-size:11px"></div>
+    </div>
+    <footer>Auto-refresh every 15s. Probes: multiple endpoints (round-robin by default).</footer>
+    <script>
+      const traceState={cursor:null,direction:'prev',serverCursors:null,currentPage:[],sort:{key:'ts',dir:'desc'}};
+      function selectedEndpoints(){const v=document.getElementById('endpointFilter').value;return (!v||v==='__all__')?[]:[v];}
+      function getWindow(){return Number(document.getElementById('windowSelect').value);} function toEpoch(dt){return dt?new Date(dt).getTime():null;} function absoluteRange(){const f=toEpoch(document.getElementById('fromTs').value);const t=toEpoch(document.getElementById('toTs').value);return (f&&t&&t>f)?{from:f,to:t}:null;}
+      async function load(resetCursor=true){try{const win=getWindow();const eps=selectedEndpoints();const abs=absoluteRange();const query=abs?new URLSearchParams({from:String(abs.from),to:String(abs.to)}):new URLSearchParams({window:String(win)});if(eps.length) query.set('endpoint',eps.join(','));const traceParams=new URLSearchParams(query.toString());traceParams.set('limit','200');if(traceState.cursor&&!resetCursor){traceParams.set('cursor',String(traceState.cursor));traceParams.set('direction',traceState.direction);} if(document.getElementById('errorsOnly').checked) traceParams.set('errorsOnly','1');const slowVal=document.getElementById('slowMs').value;if(slowVal) traceParams.set('slowMs',slowVal);const [statusRes,tracesRes]=await Promise.all([
+        fetch('/status?'+query.toString(),{cache:'no-store'}),
+        fetch('/traces?'+traceParams.toString(),{cache:'no-store'})
+      ]);const statusJson=await statusRes.json();const tracesJson=await tracesRes.json();if(resetCursor){traceState.cursor=null;traceState.direction='prev';}traceState.serverCursors=tracesJson.cursor;document.getElementById('since').textContent=`(since ${new Date(statusJson.since).toLocaleString()})`;const cards=document.getElementById('cards');cards.innerHTML='';const endpointKeys=Object.keys(statusJson.endpoints);if(!endpointKeys.length){cards.innerHTML='<div class="muted">No data yet. Waiting for first probe…</div>';populateEndpointFilter([]);return;}populateEndpointFilter(endpointKeys);endpointKeys.forEach(ep=>{const s=statusJson.endpoints[ep];const okRate=s.successRate==null?'–':(s.successRate*100).toFixed(2)+'%';const lat=s.latencyMs||{};const errList=Object.entries(s.errors).map(([k,v])=>`<span class="pill">${k}: ${v}</span>`).join(' ');const histogramId='hist_'+ep.replace(/[^a-z0-9]/gi,'_');const errLabel=abs?'(custom)':`(${win}m)`;const cardHtml=`<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div><span class="k">Endpoint</span> <span class="v">${ep}</span></div><div class="${s.successRate>=0.995?'ok':'bad'}">${okRate}</div></div><table><tr><th>Total</th><th>OK</th><th>p50</th><th>p95</th><th>p99</th></tr><tr><td>${s.total}</td><td>${s.ok}</td><td>${lat.p50 ?? '–'} ms</td><td>${lat.p95 ?? '–'} ms</td><td>${lat.p99 ?? '–'} ms</td></tr></table><div style="margin-top:8px"><div class="muted" style="margin-bottom:6px">Errors ${errLabel}</div><div>${errList||'<span class=\"muted\">none</span>'}</div></div><div style=\"margin-top:8px\"><div class=\"muted\" style=\"margin-bottom:4px\">Latency dist</div><canvas id=\"${histogramId}\" height=\"30\" style=\"width:100%;background:#0f172a;border:1px solid #243244;border-radius:4px\"></canvas></div></div>`;const wrapper=document.createElement('div');wrapper.innerHTML=cardHtml;cards.appendChild(wrapper.firstElementChild);fetchLatencyHistogram(ep,histogramId,abs,win);});const tbody=document.querySelector('#tracesTable tbody');tbody.innerHTML='';let points=tracesJson.points.slice();points.sort((a,b)=>{const k=traceState.sort.key;let av=a[k],bv=b[k];if(k==='iso'||k==='ts'){av=a.ts;bv=b.ts;}if(typeof av==='string'){av=av.toLowerCase();bv=String(bv).toLowerCase();}if(av<bv) return traceState.sort.dir==='asc'?-1:1;if(av>bv) return traceState.sort.dir==='asc'?1:-1;return 0;});traceState.currentPage=points;points.forEach(p=>{const tr=document.createElement('tr');const slowThreshold=document.getElementById('slowMs').value?Number(document.getElementById('slowMs').value):null;const highlight=!p.ok?'#fb7185':(slowThreshold&&p.latencyMs>=slowThreshold?'#f59e0b':'');tr.innerHTML=`<td>${p.iso}</td><td>${p.status ?? ''}</td><td>${p.ok?'✔':'✖'}</td><td>${p.latencyMs}</td><td>${p.endpoint}</td><td>${p.model||''}</td><td>${p.region||''}</td><td>${p.errType||''}</td><td>${p.tokensTotal ?? ''}</td><td>${p.respBytes ?? ''}</td>`;if(highlight) tr.style.color=highlight;if(!p.ok) tr.style.color='#fb7185';tbody.appendChild(tr);});document.getElementById('traceMeta').textContent=`Returned ${tracesJson.returned}/${tracesJson.total} points (limit=${tracesJson.limit}) cursor(prev=${tracesJson.cursor.prev},next=${tracesJson.cursor.next})`;document.getElementById('prevPage').disabled=!tracesJson.cursor||!tracesJson.cursor.prev;document.getElementById('nextPage').disabled=!tracesJson.cursor||!tracesJson.cursor.next;document.getElementById('lastRefresh').textContent='Last refresh: '+new Date().toLocaleTimeString();}catch(e){console.error(e);document.getElementById('lastRefresh').textContent='Last refresh error';}}
+      function pad(n){return String(n).padStart(2,'0');}
+      function toLocalInput(ts){const d=new Date(ts);return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;}
+      function syncPresetToRange(){const mins=getWindow();const now=Date.now();const from=now-mins*60000;document.getElementById('fromTs').value=toLocalInput(from);document.getElementById('toTs').value=toLocalInput(now);} 
+      function populateEndpointFilter(eps){
+        const sel=document.getElementById('endpointFilter');
+        const current=sel.value||'__all__';
+        sel.innerHTML='';
+        const all=document.createElement('option');all.value='__all__';all.textContent='All endpoints';sel.appendChild(all);
+        eps.forEach(ep=>{const o=document.createElement('option');o.value=ep;o.textContent=ep;sel.appendChild(o);});
+        // restore selection if still present; otherwise default to All
+        const hasCurrent=[...sel.options].some(o=>o.value===current);
+        sel.value=hasCurrent?current:'__all__';
+      }
+      function buildCurrentSummary(){return [...document.querySelectorAll('.card')].map(c=>{const ep=c.querySelector('.v').textContent.trim();const nums=[...c.querySelectorAll('table tr:nth-child(2) td')].map(td=>td.textContent.replace(' ms',''));return {endpoint:ep,total:Number(nums[0]),ok:Number(nums[1]),p50:nums[2],p95:nums[3],p99:nums[4]};});}
+      function exportCsv(){const data=buildCurrentSummary();if(!data.length)return;const header=['endpoint','total','ok','p50','p95','p99'];const lines=[header.join(','),...data.map(r=>header.map(h=>r[h]).join(','))];download('status.csv',lines.join('\n'));}function exportJson(){const data=buildCurrentSummary();download('status.json',JSON.stringify(data,null,2));}
+      function exportTrace(fmt){if(!traceState.currentPage.length)return;if(fmt==='json')return download('traces_page.json',JSON.stringify(traceState.currentPage,null,2));const header=['iso','status','ok','latencyMs','endpoint','model','region','errType','tokensTotal','tokensPrompt','tokensCompletion','respBytes'];const lines=[header.join(','),...traceState.currentPage.map(r=>header.map(h=>r[h]??'').join(','))];download('traces_page.csv',lines.join('\n'));}
+      async function exportAllTraces(fmt){try{const win=getWindow();const eps=selectedEndpoints();const abs=absoluteRange();const base=abs?new URLSearchParams({from:String(abs.from),to:String(abs.to)}):new URLSearchParams({window:String(win)});if(eps.length) base.set('endpoint',eps.join(','));if(document.getElementById('errorsOnly').checked) base.set('errorsOnly','1');const slowVal=document.getElementById('slowMs').value;if(slowVal) base.set('slowMs',slowVal);let all=[];let cursor=null;let direction='prev';const limit=500;let safety=0;while(safety<50){const qp=new URLSearchParams(base.toString());qp.set('limit',String(limit));if(cursor){qp.set('cursor',String(cursor));qp.set('direction',direction);}const r=await fetch('/traces?'+qp.toString());const j=await r.json();all=all.concat(j.points);if(!j.cursor||!j.cursor.next||j.points.length<limit) break;cursor=j.cursor.next;direction='prev';safety++;}if(fmt==='json')return download('traces_all.json',JSON.stringify(all,null,2));const header=['iso','status','ok','latencyMs','endpoint','model','region','errType','tokensTotal','tokensPrompt','tokensCompletion','respBytes'];const lines=[header.join(','),...all.map(r=>header.map(h=>r[h]??'').join(','))];download('traces_all.csv',lines.join('\n'));}catch(e){console.error('export all traces failed',e);}}
+  async function fetchLatencyHistogram(ep,id,abs,win){try{const params=abs?new URLSearchParams({from:String(abs.from),to:String(abs.to),endpoint:ep}):new URLSearchParams({window:String(win),endpoint:ep});const r=await fetch('/latency_histogram?'+params.toString(),{cache:'no-store'});const j=await r.json();const canvas=document.getElementById(id);if(!canvas)return;const ctx=canvas.getContext('2d');ctx.clearRect(0,0,canvas.width,canvas.height);if(!j.buckets||!j.buckets.length){ctx.fillStyle='#64748b';ctx.font='10px system-ui';ctx.fillText('no data',4,16);return;}const maxC=Math.max(...j.buckets.map(b=>b.count));const w=canvas.clientWidth||canvas.width;const h=canvas.height;const barW=w/j.buckets.length;j.buckets.forEach((b,i)=>{const bh=(b.count/maxC)*(h-4);ctx.fillStyle='#3b82f6';ctx.fillRect(i*barW,h-bh,barW-1,bh);});}catch(e){}}
+      function download(filename,text){const blob=new Blob([text],{type:'text/plain'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),4000);}function toggleButtons(isSummary){const s=document.getElementById('viewSummary');const t=document.getElementById('viewTraces');if(isSummary){s.style.background='#2563eb';t.style.background='#1f2937';}else{t.style.background='#2563eb';s.style.background='#1f2937';}}
+      document.getElementById('windowSelect').addEventListener('change',()=>{syncPresetToRange();load(true);});document.getElementById('applyRange').addEventListener('click',()=>load(true));document.getElementById('endpointFilter').addEventListener('change',()=>load(true));document.getElementById('exportCsv').addEventListener('click',exportCsv);document.getElementById('exportJson').addEventListener('click',exportJson);document.getElementById('viewSummary').addEventListener('click',()=>{document.getElementById('tracesContainer').style.display='none';document.getElementById('cards').style.display='flex';toggleButtons(true);});document.getElementById('viewTraces').addEventListener('click',()=>{document.getElementById('cards').style.display='none';document.getElementById('tracesContainer').style.display='block';toggleButtons(false);});document.getElementById('applyTraceFilters').addEventListener('click',()=>load(true));document.getElementById('prevPage').addEventListener('click',()=>{if(!traceState.serverCursors)return;traceState.cursor=traceState.serverCursors.prev;traceState.direction='next';load(false);});document.getElementById('nextPage').addEventListener('click',()=>{if(!traceState.serverCursors)return;traceState.cursor=traceState.serverCursors.next;traceState.direction='prev';load(false);});document.getElementById('exportTraceCsv').addEventListener('click',()=>exportTrace('csv'));document.getElementById('exportTraceJson').addEventListener('click',()=>exportTrace('json'));document.getElementById('exportTraceAllCsv').addEventListener('click',()=>exportAllTraces('csv'));document.getElementById('exportTraceAllJson').addEventListener('click',()=>exportAllTraces('json'));document.getElementById('traceHeaderRow').addEventListener('click',ev=>{const th=ev.target.closest('th');if(!th||!th.dataset.k)return;const k=th.dataset.k;if(traceState.sort.key===k){traceState.sort.dir=traceState.sort.dir==='asc'?'desc':'asc';}else{traceState.sort.key=k;traceState.sort.dir='asc';}load(false);});
+      syncPresetToRange();load(true);setInterval(()=>load(false),15000);
+    </script>
+  </body>
+</html>
