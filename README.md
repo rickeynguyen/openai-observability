@@ -142,3 +142,24 @@ Notes:
 Misc:
 - `GET /config` returns non-sensitive runtime flags (ai/db enabled, sim/index intervals) for the UI.
 
+## Synthetic Monitors (beta)
+
+Create browser-like synthetic tests using the dashboard with AI assistance.
+
+UI:
+- Click "Create Synthetic" in the top menu.
+- Describe your test (e.g., "visit https://chatgpt.com, type 'tell me a joke' in the input, press Enter, pass if a response appears").
+- Click Draft with AI to generate a JSON spec; review/edit.
+- Click Create Monitor, then Run Now to execute (tries Playwright, falls back to HTTP fetch).
+
+Endpoints:
+- POST `/synthetics/draft` { prompt } → { spec }
+- POST `/synthetics` { spec } → { id, monitor }
+- GET `/synthetics` → { items }
+- POST `/synthetics/:id/run` → { ok, statusText, screenshot?, logs[] }
+- GET `/synthetics/runs` → recent runs
+
+Notes:
+- Playwright is optional. If not installed, the run falls back to a simple HTTP GET + text assert.
+- Screenshots (when available) are saved under `public/synth/` and shown in the modal.
+

@@ -176,6 +176,7 @@ app.get('/config', (req, res) => {
       logSimEnabled: LOG_SIM_ENABLED,
       logSimIntervalMs: LOG_SIM_INTERVAL_MS,
       embIndexIntervalMs: EMB_INDEX_INTERVAL_MS,
+  synthetics: { enabled: true },
       probe: { intervalSec, model, region }
     });
   } catch (e) {
@@ -334,6 +335,169 @@ app.get('/ai/index/auto/status', requireIngestKey, (req,res)=>{
   noStore(res);
   res.json({ running: !!embedIndexTimer, intervalMs: EMB_INDEX_INTERVAL_MS });
 });
+
+// ===== Synthetic Monitors (AI-assisted) =====
+const synthMonitors = [];
+const synthRuns = [];
+let synthNextId = 1;
+let synthRunNextId = 1;
+
+function normalizeSynthSpec(spec){
+  const out = {
+    name: String(spec?.name || 'Synthetic Monitor'),
+    schedule: spec?.schedule || 'manual',
+    startUrl: String(spec?.startUrl || spec?.url || ''),
+    timeoutMs: Number(spec?.timeoutMs || 30000),
+    steps: Array.isArray(spec?.steps) ? spec.steps : []
+  };
+  out.steps = out.steps.map(s=>({
+    action: String(s?.action||'').toLowerCase(),
+    url: s?.url ? String(s.url) : undefined,
+    selector: s?.selector ? String(s.selector) : undefined,
+    text: s?.text != null ? String(s.text) : undefined,
+    enter: s?.enter ? true : false,
+    timeoutMs: s?.timeoutMs!=null ? Number(s.timeoutMs) : undefined,
+    any: s?.any ? true : false
+  })).filter(s=>s.action);
+  return out;
+}
+
+async function ensureSynthDir(){
+  const dir = path.join(__dirname, '../public/synth');
+  try { await fs.mkdir(dir, { recursive: true }); } catch(_){ }
+  return dir;
+}
+
+// Draft monitor spec using LLM
+app.post('/synthetics/draft', async (req, res) => {
+  noStore(res);
+  try{
+    const prompt = String(req.body?.prompt||'').trim();
+    if(!prompt) return res.status(400).json({ error:'prompt required' });
+    if (!process.env.OPENAI_API_KEY) return res.status(400).json({ error:'OPENAI_API_KEY required for drafting' });
+    const sys = `You are a test designer that outputs ONLY JSON for a headless browser synthetic test DSL. No prose. The JSON schema:\n{
+  "name": string,
+  "schedule": "manual" | "every_5m" | "every_15m" | "hourly",
+  "startUrl": string,
+  "timeoutMs": number,
+  "steps": Array<{
+    action: "goto" | "click" | "type" | "waitFor" | "assertTextContains",
+    url?: string,
+    selector?: string,
+    text?: string,
+    enter?: boolean,
+    timeoutMs?: number,
+    any?: boolean
+  }>
+}\nRules: Prefer robust CSS selectors (textarea, input[type=\"text\"], button, [role=\"button\"], etc). For \"type\", include selector and text. If pressing enter is needed, set enter: true. For assertions, include a broad selector like \"body\". Output ONLY the JSON.`;
+    const user = `Create a synthetic test for: ${prompt}`;
+    const r = await fetch('https://api.openai.com/v1/responses', {
+      method:'POST', headers:{ 'Content-Type':'application/json','Authorization':`Bearer ${process.env.OPENAI_API_KEY}` },
+      body: JSON.stringify({ model: process.env.OPENAI_RESPONSES_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini', input:[
+        { role:'system', content:[{ type:'input_text', text: sys }] },
+        { role:'user', content:[{ type:'input_text', text: user }] }
+      ], max_output_tokens: 600, temperature: 0 })
+    });
+    if(!r.ok){ const t=await r.text(); return res.status(500).json({ error:'llm_failed', detail:t }); }
+    const j = await r.json();
+    const outText = extractResponsesText(j) || '';
+    let specObj = null;
+    try { specObj = JSON.parse(outText); } catch(_){ }
+    if(!specObj || !specObj.steps){
+      const urlMatch = prompt.match(/https?:\/\/\S+/);
+      const url = urlMatch ? urlMatch[0] : 'https://example.com';
+      specObj = { name:'Synthetic Test', schedule:'manual', startUrl:url, timeoutMs:20000, steps:[ { action:'goto', url }, { action:'assertTextContains', selector:'body', text:'', any:true } ] };
+    }
+    const spec = normalizeSynthSpec(specObj);
+    res.json({ spec });
+  }catch(e){ res.status(500).json({ error:String(e?.message||e) }); }
+});
+
+// Create monitor
+app.post('/synthetics', async (req,res)=>{
+  noStore(res);
+  try{
+    const spec = normalizeSynthSpec(req.body?.spec||{});
+    if(!spec.startUrl && !spec.steps.some(s=>s.action==='goto' && s.url)) return res.status(400).json({ error:'startUrl or first goto step required' });
+    const id = synthNextId++;
+    const m = { id, name: spec.name || `Monitor ${id}`, spec, createdAt: Date.now() };
+    synthMonitors.push(m);
+    res.json({ id, monitor: m });
+  }catch(e){ res.status(500).json({ error:String(e?.message||e) }); }
+});
+
+// List monitors
+app.get('/synthetics', (req,res)=>{
+  noStore(res);
+  res.json({ items: synthMonitors.map(m=>({ id:m.id, name:m.name, createdAt:m.createdAt })) });
+});
+
+// Run a monitor once
+app.post('/synthetics/:id/run', async (req,res)=>{
+  noStore(res);
+  try{
+    const id = Number(req.params.id);
+    const m = synthMonitors.find(x=>x.id===id);
+    if(!m) return res.status(404).json({ error:'not_found' });
+    const runId = synthRunNextId++;
+    const startedAt = Date.now();
+    const result = await runSyntheticMonitor(m.spec, runId);
+    const rec = { id: runId, monitorId: id, startedAt, finishedAt: Date.now(), ok: !!result.ok, statusText: result.statusText||'', screenshot: result.screenshot||null, logs: result.logs||[] };
+    synthRuns.unshift(rec);
+    res.json(rec);
+  }catch(e){ res.status(500).json({ error:String(e?.message||e) }); }
+});
+
+// List runs
+app.get('/synthetics/runs', (req,res)=>{
+  noStore(res);
+  res.json({ items: synthRuns.slice(0,50) });
+});
+
+async function runSyntheticMonitor(spec, runId){
+  const logs = [];
+  const log = (m)=> logs.push({ ts: Date.now(), msg: m });
+  await ensureSynthDir();
+  const fileRel = `synth/run-${runId}.png`;
+  const fileAbs = path.join(__dirname, '../public', fileRel);
+  // Try Playwright first
+  try{
+    const pw = await import('playwright').catch(()=>null);
+    if (pw && pw.chromium) {
+      const browser = await pw.chromium.launch({ headless: true });
+      const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+      const page = await ctx.newPage();
+      const timeout = Number(spec.timeoutMs||30000);
+      const startUrl = spec.startUrl || (spec.steps.find(s=>s.action==='goto')?.url) || '';
+      if(startUrl){ log(`goto ${startUrl}`); await page.goto(startUrl, { timeout }); }
+      for (const step of spec.steps){
+        const t = step.timeoutMs || timeout;
+        if (step.action === 'goto' && step.url){ log(`goto ${step.url}`); await page.goto(step.url, { timeout: t }); }
+        else if (step.action === 'click' && step.selector){ log(`click ${step.selector}`); await page.click(step.selector, { timeout: t }); }
+        else if (step.action === 'type' && step.selector){ log(`type ${step.selector} ← ${step.text||''}`); await page.fill(step.selector, String(step.text||''), { timeout: t }); if(step.enter){ await page.keyboard.press('Enter'); } }
+        else if (step.action === 'waitFor' && step.selector){ log(`waitFor ${step.selector}`); await page.waitForSelector(step.selector, { timeout: t }); }
+        else if (step.action === 'assertTextContains'){ const sel = step.selector || 'body'; const txt = String(step.text||'').toLowerCase(); log(`assertTextContains ${sel} ~ ${txt}`); const content = await page.locator(sel).first().innerText({ timeout: t }).catch(async()=> (await page.content())); const ok = String(content||'').toLowerCase().includes(txt); if(!ok) throw new Error(`assert failed: missing text`); }
+      }
+      await page.screenshot({ path: fileAbs, fullPage: true });
+      await browser.close();
+      return { ok: true, statusText: 'ok', screenshot: '/'+fileRel, logs };
+    }
+  }catch(e){ log('playwright failed: '+String(e?.message||e)); }
+  // Fallback: simple HTTP fetch
+  try{
+    const startUrl = spec.startUrl || (spec.steps.find(s=>s.action==='goto')?.url) || '';
+    if (!startUrl) return { ok:false, statusText:'no_url', logs };
+    log(`fetch ${startUrl}`);
+    const r = await fetch(startUrl);
+    const text = await r.text();
+    const assertStep = spec.steps.find(s=>s.action==='assertTextContains');
+    if (assertStep && assertStep.text) {
+      const ok = text.toLowerCase().includes(String(assertStep.text).toLowerCase());
+      return { ok, statusText: ok?'ok':'assert_failed', screenshot:null, logs };
+    }
+    return { ok: r.ok, statusText: String(r.status), screenshot:null, logs };
+  }catch(e){ log('fetch failed: '+String(e?.message||e)); return { ok:false, statusText:'fetch_failed', screenshot:null, logs }; }
+}
 
 app.get('/logs/search', async (req,res)=>{
   noStore(res);

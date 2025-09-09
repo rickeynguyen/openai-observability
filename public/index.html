@@ -60,7 +60,7 @@
         <button id="exportJson" style="background:#1f2937;border:1px solid #243244;color:#e5e7eb;border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer">JSON</button>
       </div>
     </h1>
-  <div style="display:flex;gap:12px;margin-top:8px;align-items:center"><button id="viewSummary" class="nav-btn active">Summary</button><button id="viewTraces" class="nav-btn">Traces</button><button id="viewChat" class="nav-btn">Chat</button><span id="lastRefresh" class="muted" style="margin-left:auto;font-size:11px"></span></div>
+  <div style="display:flex;gap:12px;margin-top:8px;align-items:center"><button id="viewSummary" class="nav-btn active">Summary</button><button id="viewTraces" class="nav-btn">Traces</button><button id="viewChat" class="nav-btn">Chat</button><button id="createSyntheticBtn" class="nav-btn" title="Create synthetic monitor using AI">Create Synthetic</button><span id="lastRefresh" class="muted" style="margin-left:auto;font-size:11px"></span></div>
     <div class="row" id="cards"></div>
     <!-- Enhancements (visible with Summary view) -->
     <section id="enhancements" style="display:block;margin-top:16px">
@@ -328,6 +328,80 @@
     </div>
     <footer>Auto-refresh every 15s. Probes: multiple endpoints (round-robin by default).</footer>
     <script>
+      // Synthetic Monitor Modal
+      const synthModal = document.createElement('div');
+      synthModal.id = 'synthModal';
+      synthModal.style.cssText = 'display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); align-items:center; justify-content:center; z-index:9999;';
+      synthModal.innerHTML = `
+        <div style="background:#0b0f14; border:1px solid #243244; border-radius:10px; padding:14px; width:min(720px,92vw); color:#e5e7eb;">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
+            <div style="font-weight:700;">Create Synthetic Monitor</div>
+            <button id="synthClose" class="btn" type="button">Close</button>
+          </div>
+          <div class="muted" style="font-size:12px; margin-bottom:8px;">Describe the synthetic test in natural language. We'll draft a test spec, you can edit, then create and run it.</div>
+          <textarea id="synthPrompt" rows="3" placeholder="e.g., Create a synthetic test to https://chatgpt.com. In the input box, type 'tell me a joke' and hit Enter. Pass if a response is shown." style="width:100%; background:#111827; color:#e5e7eb; border:1px solid #243244; border-radius:6px; padding:8px;"></textarea>
+          <div style="display:flex; gap:8px; margin-top:8px;">
+            <button id="synthDraft" class="btn btn-primary" type="button">Draft with AI</button>
+            <span id="synthMsg" class="muted"></span>
+          </div>
+          <div style="margin-top:8px;">
+            <label class="muted" style="font-size:12px;">Spec</label>
+            <textarea id="synthSpec" rows="10" style="width:100%; background:#111827; color:#e5e7eb; border:1px solid #243244; border-radius:6px; padding:8px; font-family:ui-monospace, monospace;"></textarea>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center; margin-top:8px;">
+            <button id="synthCreate" class="btn btn-accent" type="button">Create Monitor</button>
+            <button id="synthRun" class="btn" type="button" disabled>Run Now</button>
+            <span id="synthRunMsg" class="muted"></span>
+          </div>
+          <div id="synthRunOutput" class="muted" style="font-size:12px; margin-top:8px;"></div>
+        </div>`;
+      document.body.appendChild(synthModal);
+      function openSynth(){ synthModal.style.display='flex'; }
+      function closeSynth(){ synthModal.style.display='none'; }
+      document.getElementById('createSyntheticBtn').addEventListener('click', openSynth);
+      synthModal.querySelector('#synthClose').addEventListener('click', closeSynth);
+      synthModal.addEventListener('click', (e)=>{ if(e.target===synthModal) closeSynth(); });
+
+      async function draftSynth(){
+        const msg = document.getElementById('synthMsg'); msg.textContent='Drafting…';
+        try{
+          const prompt = document.getElementById('synthPrompt').value.trim();
+          const r = await fetch('/synthetics/draft',{ method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify({ prompt }) });
+          const j = await r.json();
+          if(!r.ok){ msg.textContent = 'Draft failed: '+(j.error||r.status); return; }
+          document.getElementById('synthSpec').value = JSON.stringify(j.spec, null, 2);
+          msg.textContent = 'Draft ready — review/edit the spec below.';
+        }catch(e){ msg.textContent='Draft error'; }
+      }
+      async function createSynth(){
+        const msg = document.getElementById('synthMsg');
+        msg.textContent='Creating…';
+        try{
+          let spec; try{ spec = JSON.parse(document.getElementById('synthSpec').value); }catch(_){ msg.textContent='Invalid JSON spec'; return; }
+          const r = await fetch('/synthetics',{ method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify({ spec }) });
+          const j = await r.json();
+          if(!r.ok){ msg.textContent='Create failed: '+(j.error||r.status); return; }
+          msg.textContent='Created monitor #'+j.id;
+          const runBtn = document.getElementById('synthRun'); runBtn.disabled=false; runBtn.dataset.id=String(j.id);
+        }catch(e){ msg.textContent='Create error'; }
+      }
+      async function runSynth(){
+        const runBtn = document.getElementById('synthRun'); const id = runBtn.dataset.id; if(!id) return;
+        const msg = document.getElementById('synthRunMsg'); const out = document.getElementById('synthRunOutput');
+        msg.textContent='Running…'; out.innerHTML='';
+        try{
+          const r = await fetch(`/synthetics/${id}/run`,{ method:'POST' });
+          const j = await r.json();
+          if(!r.ok){ msg.textContent='Run failed: '+(j.error||r.status); return; }
+          msg.textContent = j.ok ? 'Run OK' : ('Run failed: '+(j.statusText||''));
+          const logs = (j.logs||[]).map(l=> new Date(l.ts).toISOString()+': '+l.msg).join('\n');
+          out.textContent = logs || '(no logs)';
+          if (j.screenshot){ const img = document.createElement('img'); img.src = j.screenshot; img.alt = 'screenshot'; img.style.maxWidth='100%'; img.style.marginTop='8px'; out.appendChild(document.createElement('br')); out.appendChild(img); }
+        }catch(e){ msg.textContent='Run error'; }
+      }
+      document.getElementById('synthDraft').addEventListener('click', draftSynth);
+      document.getElementById('synthCreate').addEventListener('click', createSynth);
+      document.getElementById('synthRun').addEventListener('click', runSynth);
       // Lightweight Markdown renderer with sanitization (basic headings, emphasis, code, links, lists, blockquotes)
       function mdEscapeHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
       function mdAttrEscape(s){return String(s||'').replace(/"/g,'&quot;').replace(/</g,'').replace(/>/g,'');}
