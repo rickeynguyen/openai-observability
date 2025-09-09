@@ -67,6 +67,42 @@ function broadcastTrace(point) {
 const _origPush = store.push.bind(store);
 store.push = (point) => { _origPush(point); broadcastTrace(point); };
 
+// Helper: extract assistant text from the Responses API JSON (handles multiple shapes)
+function extractResponsesText(j) {
+  try {
+    if (!j) return null;
+    if (typeof j.output_text === 'string' && j.output_text.trim()) return j.output_text;
+    if (Array.isArray(j.output)) {
+      const parts = [];
+      for (const item of j.output) {
+        const content = item && Array.isArray(item.content) ? item.content : null;
+        if (!content) continue;
+        for (const c of content) {
+          const t = typeof c?.text === 'string' ? c.text : (typeof c?.output_text === 'string' ? c.output_text : null);
+          if (t) parts.push(t);
+        }
+      }
+      const s = parts.join('').trim();
+      if (s) return s;
+    }
+    // Some SDKs may nest under response
+    if (j.response) {
+      const t = extractResponsesText(j.response);
+      if (t) return t;
+    }
+    // Very old/alternate shapes
+    if (Array.isArray(j.content)) {
+      const parts = [];
+      for (const c of j.content) {
+        if (typeof c?.text === 'string') parts.push(c.text);
+      }
+      const s = parts.join('').trim();
+      if (s) return s;
+    }
+  } catch (_) {}
+  return null;
+}
+
 // Probe setup
 const intervalSec = Number(process.env.PROBE_INTERVAL_SEC || '60');
 const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
@@ -129,6 +165,23 @@ function requireIngestKey(req,res,next){
   console.warn(`[auth] unauthorized for ${req.method} ${req.originalUrl} (has_key=${Boolean(tok)})`);
   return res.status(401).json({ error:'unauthorized' });
 }
+
+// Public, non-sensitive config for the UI (no secrets)
+app.get('/config', (req, res) => {
+  noStore(res);
+  try {
+    res.json({
+      enableDb: !!db,
+      enableAi: ENABLE_AI,
+      logSimEnabled: LOG_SIM_ENABLED,
+      logSimIntervalMs: LOG_SIM_INTERVAL_MS,
+      embIndexIntervalMs: EMB_INDEX_INTERVAL_MS,
+      probe: { intervalSec, model, region }
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message||e) });
+  }
+});
 
 // logs ingestion (NDJSON or JSON array)
 app.post('/logs/ingest', async (req, res) => {
@@ -311,6 +364,26 @@ app.get('/logs/search', async (req,res)=>{
   res.json({ items });
 });
 
+// Simple logs listing for a time range and optional filters
+app.get('/logs/list', async (req,res)=>{
+  noStore(res);
+  if (!enableDb || !db) return res.json({ items: [] });
+  try{
+    const { from, to, endpoint, model, region, limit='100' } = req.query;
+    const top = Math.min(500, Number(limit)||100);
+    let where = '1=1';
+    const params = { limit: top };
+    if (from) { where += ' AND ts >= @from'; params.from = Number(from); }
+    if (to) { where += ' AND ts <= @to'; params.to = Number(to); }
+    if (endpoint && endpoint !== '__all__') { where += ' AND endpoint = @endpoint'; params.endpoint = String(endpoint); }
+    if (model) { where += ' AND model = @model'; params.model = String(model); }
+    if (region) { where += ' AND region = @region'; params.region = String(region); }
+    const sql = `SELECT id, ts, endpoint, model, region, level, status, latency_ms as latencyMs, tokens_prompt as tokensPrompt, tokens_completion as tokensCompletion, tokens_total as tokensTotal, err_type as errType, text FROM logs_raw WHERE ${where} ORDER BY ts DESC LIMIT @limit`;
+    const rows = db.prepare(sql).all(params);
+    res.json({ items: rows });
+  }catch(e){ res.status(500).json({ error: String(e?.message||e) }); }
+});
+
 function cosine(a,b){ let dot=0,na=0,nb=0; const n=Math.min(a.length,b.length); for(let i=0;i<n;i++){const x=a[i],y=b[i]; dot+=x*y; na+=x*x; nb+=y*y;} return dot/(Math.sqrt(na)*Math.sqrt(nb)+1e-8); }
 
 // ===== AI metrics and summary (server-side helpers) =====
@@ -406,57 +479,281 @@ app.post('/ai/chat', async (req, res) => {
     const p50=q(lat,0.5), p95=q(lat,0.95), p99=q(lat,0.99);
     const byStatus = rows.reduce((acc,r)=>{ const k=String(r.status??(r.ok?200:0)); acc[k]=(acc[k]||0)+1; return acc; },{});
 
-    // Logs: hybrid search using the prompt text
+    // Logs: hybrid search (FTS + vectors when available)
     let logs = [];
     try {
-      const url = new URL('http://localhost'); // placeholder
       const { searchLogsFts, iterLogsWithVecMeta, fetchLogsByIds } = await import('./db.js');
-      const ftsHits = userMsg ? searchLogsFts(db, String(userMsg), 100) : [];
-      // no vector match here to avoid extra embed; rely on fts in PoC
-      const ids = ftsHits.slice(0, 20).map(h=>h.id);
+      const ftsHits = userMsg ? searchLogsFts(db, String(userMsg), 200) : [];
+      let vecHits = [];
+      if (ENABLE_AI && process.env.OPENAI_API_KEY && userMsg && userMsg.trim()) {
+        try {
+          const [qvec] = await embedTexts([String(userMsg)], EMBEDDING_MODEL, process.env.OPENAI_API_KEY);
+          const candidates = iterLogsWithVecMeta(db, { from, to, endpoint: endpoint || null, limit: 2000 });
+          vecHits = candidates.map(c=>({ id: c.id, score: cosine(qvec, c.emb) })).sort((a,b)=>b.score-a.score).slice(0,200);
+        } catch(e) { console.warn('[ai/chat] vec failed', e.message); }
+      }
+      const ranks = new Map(); const add=(arr,w)=>arr.forEach((h,i)=>ranks.set(h.id,(ranks.get(h.id)||0)+ w/(60+i)));
+      if (vecHits.length) add(vecHits,1.0); if (ftsHits.length) add(ftsHits,0.8);
+      let ids = Array.from(ranks.entries()).sort((a,b)=>b[1]-a[1]).map(([id])=>id).slice(0,20);
+      if (!ids.length) {
+        ids = ftsHits.slice(0, 20).map(h=>h.id);
+      }
       logs = fetchLogsByIds(db, ids);
     } catch {}
 
-    // Compose an answer (LLM-free PoC by default)
-    const topStatuses = Object.entries(byStatus).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([k,v])=>`${k}:${v}`).join(', ');
-    let answer = `In the selected window, total=${total}, ok=${ok} (SLI ${(sli*100).toFixed(2)}%). Latency p50=${p50??'–'}ms p95=${p95??'–'}ms p99=${p99??'–'}ms. Top statuses: ${topStatuses||'—'}.`;
+  // Intent detection
+  const lowerQ = String(userMsg||'').toLowerCase();
+  const wantPopularityModel = /(most\s+(popular|used|common)|top\s+model|popular|populate)/.test(lowerQ);
+  const wantJoke = /(\btell\b.*\bjoke\b|\bjoke\b|\bfunny\b|\blaugh\b)/.test(lowerQ);
 
-    // Optional LLM enhancement when requested and configured
-    if (ENABLE_AI && body.llm === true && process.env.OPENAI_API_KEY) {
+  // Compose an answer (LLM-free, but contextual)
+    const topStatuses = Object.entries(byStatus).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([k,v])=>`${k}:${v}`).join(', ');
+    const rangeStr = `${new Date(from).toISOString()} → ${new Date(to).toISOString()}`;
+    const epStr = endpoint ? ` for ${endpoint}` : '';
+    const baseLine = `In ${rangeStr}${epStr}, total=${total}, ok=${ok} (SLI ${(sli*100).toFixed(2)}%). Latency p50=${p50??'–'}ms p95=${p95??'–'}ms p99=${p99??'–'}ms. Top statuses: ${topStatuses||'—'}.`;
+    const want429 = /429|rate.?limit/.test(lowerQ);
+    const wantError = /error|fail|5\d\d|4\d\d/.test(lowerQ);
+    const wantLatency = /latency|slow|p95|p99|perf/.test(lowerQ);
+    const wantCost = /cost|token/.test(lowerQ);
+    const details = [];
+    if (want429) {
+      const c429 = rows.filter(r => (r.status||0)===429).length;
+      details.push(`429s: ${c429}`);
+    }
+    if (wantError) {
+      const errTop = Object.entries(byStatus).filter(([k])=>Number(k)>=400).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([k,v])=>`${k}:${v}`).join(', ');
+      if (errTop) details.push(`Top error statuses: ${errTop}`);
+    }
+    if (wantLatency) {
+      const worst = rows.filter(r=>r.ok).sort((a,b)=>b.latencyMs-a.latencyMs).slice(0,3).map(r=>`${r.latencyMs}ms ${r.endpoint} ${r.model||''} ${r.region||''}`).join(' | ');
+      if (worst) details.push(`Slowest ok: ${worst}`);
+    }
+    if (wantCost) {
+      const tokTotal = rows.reduce((a,r)=>a+(r.tokensTotal||0),0);
+      const tokPrompt = rows.reduce((a,r)=>a+(r.tokensPrompt||0),0);
+      const tokComp = rows.reduce((a,r)=>a+(r.tokensCompletion||0),0);
+      details.push(`Tokens total=${tokTotal} (prompt=${tokPrompt}, completion=${tokComp})`);
+    }
+    // Include brief log snippets when available
+    const logSnippet = logs.length ? `Top log: ${String(logs[0].text||'').slice(0,140)}` : '';
+    // Popular model analysis when asked
+    let popularityBlock = '';
+    if (wantPopularityModel) {
+      let topModels = [];
       try {
-        const sys = `You are an SRE assistant. Summarize reliability for the given time window. Include: total, SLI%, p50/p95/p99, top error statuses, and a short recommendation. Keep it concise.`;
-        const ctx = `Window: ${new Date(from).toISOString()} to ${new Date(to).toISOString()}\n`+
-          `Endpoint: ${endpoint||'all'}\n`+
-          `Total: ${total}\nOK: ${ok}\nSLI: ${(sli*100).toFixed(2)}%\n`+
-          `Latency: p50=${p50??'–'}ms p95=${p95??'–'}ms p99=${p99??'–'}ms\n`+
-          `Top statuses: ${topStatuses||'—'}\n`+
-          `User question: ${userMsg || '(none)'}\n`+
-          `Top logs: ${logs.slice(0,5).map(l=>`[${new Date(l.ts).toISOString()}] ${l.status} ${l.endpoint} ${l.model||''} ${l.region||''} ${String(l.text||'').slice(0,160)}`).join('\n')}`;
-        const r = await fetch('https://api.openai.com/v1/responses', {
+        if (db) {
+          const params = { from, to };
+          let sql = `SELECT model AS key, COUNT(1) AS c FROM logs_raw WHERE ts BETWEEN @from AND @to AND model IS NOT NULL AND model <> ''`;
+          if (endpoint) { sql += ` AND endpoint = @endpoint`; params.endpoint = endpoint; }
+          sql += ` GROUP BY model ORDER BY c DESC LIMIT 5`;
+          const rowsM = db.prepare(sql).all(params);
+          topModels = rowsM.map(r=>({ key: r.key, count: r.c }));
+        }
+      } catch {}
+      if (!topModels.length) {
+        // fallback to probe rows
+        const counts = rows.reduce((acc,r)=>{ const k=r.model||'(unknown)'; acc[k]=(acc[k]||0)+1; return acc; },{});
+        topModels = Object.entries(counts).map(([k,v])=>({ key:k, count:v })).sort((a,b)=>b.count-a.count).slice(0,5);
+      }
+      const grand = topModels.reduce((a,x)=>a+x.count,0) || total || 1;
+      if (topModels.length) {
+        const lead = topModels[0];
+        const share = ((lead.count/(grand||1))*100).toFixed(1);
+        const rest = topModels.slice(1).map(m=>`${m.key}: ${m.count} (${((m.count/(grand||1))*100).toFixed(1)}%)`).join(', ');
+        popularityBlock = `Most used model${epStr}: ${lead.key} — ${lead.count} calls (${share}%) in ${rangeStr}.` + (rest?` Next: ${rest}.`: '');
+      } else {
+        popularityBlock = `No model usage found in ${rangeStr}${epStr}.`;
+      }
+    }
+
+    // Build contextual data tables for diagram
+    const dataTables = [];
+    let dataContext = null;
+    if (wantPopularityModel) {
+      let topModels = [];
+      try {
+        if (db) {
+          const params = { from, to };
+          let sql = `SELECT model AS key, COUNT(1) AS c FROM logs_raw WHERE ts BETWEEN @from AND @to AND model IS NOT NULL AND model <> ''`;
+          if (endpoint) { sql += ` AND endpoint = @endpoint`; params.endpoint = endpoint; }
+          sql += ` GROUP BY model ORDER BY c DESC LIMIT 5`;
+          const rowsM = db.prepare(sql).all(params);
+          topModels = rowsM.map(r=>({ key: r.key, count: r.c }));
+        }
+      } catch {}
+      if (!topModels.length) {
+        const counts = rows.reduce((acc,r)=>{ const k=r.model||'(unknown)'; acc[k]=(acc[k]||0)+1; return acc; },{});
+        topModels = Object.entries(counts).map(([k,v])=>({ key:k, count:v })).sort((a,b)=>b.count-a.count).slice(0,5);
+      }
+      const tbl = { name:'popular_models', rows: topModels.map(m=>[m.key, m.count]) };
+      dataTables.push(tbl);
+      dataContext = { table: 'popular_models', title: 'Most used models' };
+    } else if (wantLatency) {
+      // Aggregate p95 latency by endpoint (ok requests only)
+      const groups = new Map();
+      for (const r of rows) {
+        if (!r.ok || typeof r.latencyMs !== 'number') continue;
+        const key = r.endpoint || '(unknown)';
+        const arr = groups.get(key) || [];
+        arr.push(r.latencyMs);
+        groups.set(key, arr);
+      }
+      const quant = (arr,q)=>{ if(!arr.length) return 0; const a=arr.slice().sort((x,y)=>x-y); const pos=(a.length-1)*q; const b=Math.floor(pos); const rest=pos-b; return a[b+1]!==undefined ? a[b]+rest*(a[b+1]-a[b]) : a[b]; };
+      const items = Array.from(groups.entries()).map(([k,arr])=>[k, Math.round(quant(arr,0.95))]).sort((a,b)=>b[1]-a[1]).slice(0,7);
+      if (items.length) {
+        dataTables.push({ name:'latency_by_endpoint', rows: items });
+        dataContext = { table: 'latency_by_endpoint', title: 'Endpoint p95 latency' };
+      }
+    } else if (wantError || want429) {
+      dataContext = { table: 'errors_by_status', title: 'Errors by status' };
+    } else if (wantCost) {
+      dataContext = { table: 'tokens_summary', title: 'Tokens' };
+    }
+
+    let answer = wantPopularityModel
+      ? [popularityBlock, details.join(' • '), logSnippet].filter(Boolean).join('\n')
+      : [baseLine, details.join(' • '), logSnippet].filter(Boolean).join('\n');
+    // Build a friendly non-LLM narrative
+    function buildNarrative(){
+      const sliPct = (sli*100).toFixed(2);
+      const health = sli>=0.995? 'SLA likely being met' : sli>=0.985? 'SLA slightly degraded' : 'SLA degraded';
+      const errTopEntry = Object.entries(byStatus).sort((a,b)=>b[1]-a[1])[0];
+      let errMsg = '';
+      if (errTopEntry){
+        const [code, cnt] = errTopEntry; const rate = total? ((cnt/total)*100).toFixed(1) : '0.0';
+        if (String(code)==='429') errMsg = `Rate limiting (${rate}% of requests) is the top error.`;
+        else if (/^5\d\d$/.test(String(code))) errMsg = `Server errors ${code} are elevated (${rate}%).`;
+        else if (Number(code)>=400) errMsg = `Client errors ${code} observed (${rate}%).`;
+      }
+      const latMsg = (p95!=null && p99!=null) ? `Latency is stable with p95 ${p95} ms and p99 ${p99} ms.` : '';
+      let extra='';
+      if (wantPopularityModel && popularityBlock) extra = popularityBlock;
+      else if (wantLatency){
+        const slowest = rows.filter(r=>r.ok).sort((a,b)=>b.latencyMs-a.latencyMs).slice(0,2).map(r=>`${r.latencyMs} ms ${r.endpoint}`).join('; ');
+        if (slowest) extra = `Slowest successful calls: ${slowest}.`;
+      } else if (wantError && errTopEntry){ extra = `Top statuses: ${topStatuses}.`; }
+      const parts = [ `${health} (SLI ${sliPct}%).`, latMsg, errMsg, extra ].filter(Boolean);
+      return parts.join(' ');
+    }
+    // Off-topic lightweight handling (no LLM): return a short, clean joke when explicitly asked
+    if (!body.llm && wantJoke) {
+      answer = "Why do programmers prefer dark mode? Because light attracts bugs.";
+    }
+
+  // Optional LLM enhancement when requested and configured
+  let usedLLM = false;
+  const useLLM = body.llm === true && !!process.env.OPENAI_API_KEY;
+  let llmModel = null; let llmTried = false; let llmStatus = null;
+  if (useLLM) {
+      try {
+        llmTried = true;
+        const sys = wantPopularityModel
+          ? `You are an SRE/analytics assistant. Answer the user's question directly using the provided context. If they ask for the most used model, identify the top model by count, include its share %, and list the next few. Keep it concise and explanatory.`
+          : (wantJoke
+            ? `Tell ONE short, clean, family-friendly programming joke. No preface, just the joke in one or two lines.`
+            : `You are an SRE assistant. Summarize reliability for the given time window. Include: total, SLI%, p50/p95/p99, top error statuses, and a short recommendation. Keep it concise.`);
+        // Prepare optional popularity facts for the LLM
+        let popularityFacts = '';
+        if (wantPopularityModel) {
+          try {
+            let facts = [];
+            if (db) {
+              const params = { from, to };
+              let sql = `SELECT model AS key, COUNT(1) AS c FROM logs_raw WHERE ts BETWEEN @from AND @to AND model IS NOT NULL AND model <> ''`;
+              if (endpoint) { sql += ` AND endpoint = @endpoint`; params.endpoint = endpoint; }
+              sql += ` GROUP BY model ORDER BY c DESC LIMIT 10`;
+              const rowsM = db.prepare(sql).all(params);
+              facts = rowsM.map(r=>`${r.key}: ${r.c}`).join(', ');
+            }
+            if (!facts) {
+              const counts = rows.reduce((acc,r)=>{ const k=r.model||'(unknown)'; acc[k]=(acc[k]||0)+1; return acc; },{});
+              const ordered = Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([k,v])=>`${k}: ${v}`).join(', ');
+              facts = ordered;
+            }
+            popularityFacts = `Model usage (count): ${facts}`;
+          } catch {}
+        }
+        const ctx = wantJoke
+          ? `User question: ${userMsg || '(none)'}\n`
+          : (
+            `Window: ${new Date(from).toISOString()} to ${new Date(to).toISOString()}\n`+
+            `Endpoint: ${endpoint||'all'}\n`+
+            (wantPopularityModel? `${popularityFacts}\n` :
+              `Total: ${total}\nOK: ${ok}\nSLI: ${(sli*100).toFixed(2)}%\nLatency: p50=${p50??'–'}ms p95=${p95??'–'}ms p99=${p99??'–'}ms\nTop statuses: ${topStatuses||'—'}\n`)+
+            `User question: ${userMsg || '(none)'}\n`+
+            `Top logs: ${logs.slice(0,5).map(l=>`[${new Date(l.ts).toISOString()}] ${l.status} ${l.endpoint} ${l.model||''} ${l.region||''} ${String(l.text||'').slice(0,160)}`).join('\n')}`
+          );
+  llmModel = process.env.OPENAI_RESPONSES_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini';
+    const r = await fetch('https://api.openai.com/v1/responses', {
           method: 'POST',
           headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` },
           body: JSON.stringify({
-            model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      model: llmModel,
             input: [
-              { role: 'system', content: [ { type: 'text', text: sys } ] },
-              { role: 'user', content: [ { type: 'text', text: ctx } ] }
+              { role: 'system', content: [ { type: 'input_text', text: sys } ] },
+              { role: 'user', content: [ { type: 'input_text', text: ctx } ] }
             ],
             max_output_tokens: 300,
             temperature: 0.2
           })
         });
-        if (r.ok) {
+    llmStatus = r.status;
+    if (r.ok) {
           const j = await r.json();
-          const txt = j?.output_text || j?.content?.[0]?.text || null;
-          if (txt) answer = txt;
+          const txt = extractResponsesText(j);
+          if (txt) { answer = txt; usedLLM = true; }
+        } else if (llmModel !== 'gpt-4o-mini') {
+          // Fallback to a safe default model if env model failed
+          try {
+            const fallbackModel = 'gpt-4o-mini';
+            const rf = await fetch('https://api.openai.com/v1/responses', {
+              method: 'POST',
+              headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` },
+              body: JSON.stringify({
+                model: fallbackModel,
+                input: [
+                  { role: 'system', content: [ { type: 'input_text', text: sys } ] },
+                  { role: 'user', content: [ { type: 'input_text', text: ctx } ] }
+                ],
+                max_output_tokens: 300,
+                temperature: 0.2
+              })
+            });
+            llmStatus = rf.status; llmModel = fallbackModel;
+            if (rf.ok) {
+              const jf = await rf.json();
+              const txt2 = extractResponsesText(jf);
+              if (txt2) { answer = txt2; usedLLM = true; }
+            }
+          } catch {}
         }
+    console.log('[ai/chat] LLM', { tried: llmTried, used: usedLLM, status: llmStatus, model: llmModel });
       } catch(e) {
         // fall back silently
+    console.warn('[ai/chat] LLM failed', String(e?.message||e));
       }
     }
 
     const citations = { logs: logs.map(l=>l.id), metrics: ['summary'] };
-    res.json({ answer, citations, data: { tables: [{ name:'errors_by_status', rows: Object.entries(byStatus) }] } });
+    const tokensTotal = rows.reduce((a,r)=>a+(r.tokensTotal||0),0);
+    const tokensPrompt = rows.reduce((a,r)=>a+(r.tokensPrompt||0),0);
+    const tokensCompletion = rows.reduce((a,r)=>a+(r.tokensCompletion||0),0);
+    const topErrs = Object.entries(byStatus).sort((a,b)=>b[1]-a[1]).slice(0,5);
+    const summary = {
+      range: { from: new Date(from).toISOString(), to: new Date(to).toISOString() },
+      endpoint: endpoint || 'all',
+      totals: { total, ok, sli },
+      latency: { p50: p50||0, p95: p95||0, p99: p99||0 },
+      errors: topErrs,
+      tokens: { prompt: tokensPrompt, completion: tokensCompletion, total: tokensTotal }
+    };
+  const data = { tables: [
+      { name:'errors_by_status', rows: Object.entries(byStatus) },
+      { name:'lat_percentiles', rows: [['p50', p50||0], ['p95', p95||0], ['p99', p99||0]] },
+      { name:'tokens_summary', rows: [['prompt', tokensPrompt], ['completion', tokensCompletion], ['total', tokensTotal]] }
+  ].concat(dataTables), context: dataContext };
+  const narrative = (usedLLM && answer) ? answer : buildNarrative();
+  res.json({ answer, narrative, citations, data, summary, usedLLM, llmModel, llmTried, llmStatus });
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
@@ -486,39 +783,192 @@ app.post('/ai/chat/stream', async (req, res) => {
     const p50=q(lat,0.5), p95=q(lat,0.95), p99=q(lat,0.99);
     const byStatus = rows.reduce((acc,r)=>{ const k=String(r.status??(r.ok?200:0)); acc[k]=(acc[k]||0)+1; return acc; },{});
 
-    // Logs (FTS only, optional)
+    // Logs: hybrid (FTS + vector if available)
     let logs = [];
     try {
-      const { searchLogsFts, fetchLogsByIds } = await import('./db.js');
-      const ftsHits = userMsg ? searchLogsFts(db, String(userMsg), 100) : [];
-      const ids = ftsHits.slice(0, 20).map(h=>h.id);
+      const { searchLogsFts, iterLogsWithVecMeta, fetchLogsByIds } = await import('./db.js');
+      const ftsHits = userMsg ? searchLogsFts(db, String(userMsg), 200) : [];
+      let vecHits = [];
+      if (ENABLE_AI && process.env.OPENAI_API_KEY && userMsg && userMsg.trim()) {
+        try {
+          const [qvec] = await embedTexts([String(userMsg)], EMBEDDING_MODEL, process.env.OPENAI_API_KEY);
+          const candidates = iterLogsWithVecMeta(db, { from, to, endpoint: endpoint || null, limit: 2000 });
+          vecHits = candidates.map(c=>({ id: c.id, score: cosine(qvec, c.emb) })).sort((a,b)=>b.score-a.score).slice(0,200);
+        } catch(e) {}
+      }
+      const ranks = new Map(); const add=(arr,w)=>arr.forEach((h,i)=>ranks.set(h.id,(ranks.get(h.id)||0)+ w/(60+i)));
+      if (vecHits.length) add(vecHits,1.0); if (ftsHits.length) add(ftsHits,0.8);
+      let ids = Array.from(ranks.entries()).sort((a,b)=>b[1]-a[1]).map(([id])=>id).slice(0,20);
+      if (!ids.length) ids = ftsHits.slice(0, 20).map(h=>h.id);
       logs = fetchLogsByIds(db, ids);
     } catch {}
 
-    // Build answer text (LLM optional, non-stream call then stream chunks)
-    const topStatuses = Object.entries(byStatus).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([k,v])=>`${k}:${v}`).join(', ');
-    let answer = `In the selected window, total=${total}, ok=${ok} (SLI ${(sli*100).toFixed(2)}%). Latency p50=${p50??'–'}ms p95=${p95??'–'}ms p99=${p99??'–'}ms. Top statuses: ${topStatuses||'—'}.`;
-    const useLLM = ENABLE_AI && body.llm === true && process.env.OPENAI_API_KEY;
-    if (useLLM) {
+  // Build answer text (LLM optional, but contextual when LLM is off)
+  const lowerQ = String(userMsg||'').toLowerCase();
+  const wantPopularityModel = /(most\s+(popular|used|common)|top\s+model|popular|populate)/.test(lowerQ);
+  const wantJoke = /(\btell\b.*\bjoke\b|\bjoke\b|\bfunny\b|\blaugh\b)/.test(lowerQ);
+  const topStatuses = Object.entries(byStatus).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([k,v])=>`${k}:${v}`).join(', ');
+  const rangeStr = `${new Date(from).toISOString()} → ${new Date(to).toISOString()}`;
+  const epStr = endpoint ? ` for ${endpoint}` : '';
+  const baseLine = `In ${rangeStr}${epStr}, total=${total}, ok=${ok} (SLI ${(sli*100).toFixed(2)}%). Latency p50=${p50??'–'}ms p95=${p95??'–'}ms p99=${p99??'–'}ms. Top statuses: ${topStatuses||'—'}.`;
+  const want429 = /429|rate.?limit/.test(lowerQ);
+  const wantError = /error|fail|5\d\d|4\d\d/.test(lowerQ);
+  const wantLatency = /latency|slow|p95|p99|perf/.test(lowerQ);
+  const wantCost = /cost|token/.test(lowerQ);
+  const details = [];
+  if (want429) { const c429 = rows.filter(r => (r.status||0)===429).length; details.push(`429s: ${c429}`); }
+  if (wantError) { const errTop = Object.entries(byStatus).filter(([k])=>Number(k)>=400).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([k,v])=>`${k}:${v}`).join(', '); if (errTop) details.push(`Top error statuses: ${errTop}`); }
+  if (wantLatency) { const worst = rows.filter(r=>r.ok).sort((a,b)=>b.latencyMs-a.latencyMs).slice(0,3).map(r=>`${r.latencyMs}ms ${r.endpoint} ${r.model||''} ${r.region||''}`).join(' | '); if (worst) details.push(`Slowest ok: ${worst}`); }
+  if (wantCost) { const tokTotal = rows.reduce((a,r)=>a+(r.tokensTotal||0),0); const tokPrompt = rows.reduce((a,r)=>a+(r.tokensPrompt||0),0); const tokComp = rows.reduce((a,r)=>a+(r.tokensCompletion||0),0); details.push(`Tokens total=${tokTotal} (prompt=${tokPrompt}, completion=${tokComp})`); }
+  const logSnippet = logs.length ? `Top log: ${String(logs[0].text||'').slice(0,140)}` : '';
+  // Popular model analysis when asked
+  let popularityBlock = '';
+  if (wantPopularityModel) {
+    let topModels = [];
+    try {
+      if (db) {
+        const params = { from, to };
+        let sql = `SELECT model AS key, COUNT(1) AS c FROM logs_raw WHERE ts BETWEEN @from AND @to AND model IS NOT NULL AND model <> ''`;
+        if (endpoint) { sql += ` AND endpoint = @endpoint`; params.endpoint = endpoint; }
+        sql += ` GROUP BY model ORDER BY c DESC LIMIT 5`;
+        const rowsM = db.prepare(sql).all(params);
+        topModels = rowsM.map(r=>({ key: r.key, count: r.c }));
+      }
+    } catch {}
+    if (!topModels.length) {
+      const counts = rows.reduce((acc,r)=>{ const k=r.model||'(unknown)'; acc[k]=(acc[k]||0)+1; return acc; },{});
+      topModels = Object.entries(counts).map(([k,v])=>({ key:k, count:v })).sort((a,b)=>b.count-a.count).slice(0,5);
+    }
+    const grand = topModels.reduce((a,x)=>a+x.count,0) || total || 1;
+    if (topModels.length) {
+      const lead = topModels[0];
+      const share = ((lead.count/(grand||1))*100).toFixed(1);
+      const rest = topModels.slice(1).map(m=>`${m.key}: ${m.count} (${((m.count/(grand||1))*100).toFixed(1)}%)`).join(', ');
+      popularityBlock = `Most used model${epStr}: ${lead.key} — ${lead.count} calls (${share}%) in ${rangeStr}.` + (rest?` Next: ${rest}.`: '');
+    } else {
+      popularityBlock = `No model usage found in ${rangeStr}${epStr}.`;
+    }
+  }
+
+  // Contextual data tables for diagram
+  const dataTables = [];
+  let dataContext = null;
+  if (wantPopularityModel) {
+    let topModels = [];
+    try {
+      if (db) {
+        const params = { from, to };
+        let sql = `SELECT model AS key, COUNT(1) AS c FROM logs_raw WHERE ts BETWEEN @from AND @to AND model IS NOT NULL AND model <> ''`;
+        if (endpoint) { sql += ` AND endpoint = @endpoint`; params.endpoint = endpoint; }
+        sql += ` GROUP BY model ORDER BY c DESC LIMIT 5`;
+        const rowsM = db.prepare(sql).all(params);
+        topModels = rowsM.map(r=>({ key: r.key, count: r.c }));
+      }
+    } catch {}
+    if (!topModels.length) {
+      const counts = rows.reduce((acc,r)=>{ const k=r.model||'(unknown)'; acc[k]=(acc[k]||0)+1; return acc; },{});
+      topModels = Object.entries(counts).map(([k,v])=>({ key:k, count:v })).sort((a,b)=>b.count-a.count).slice(0,5);
+    }
+    const tbl = { name:'popular_models', rows: topModels.map(m=>[m.key, m.count]) };
+    dataTables.push(tbl);
+    dataContext = { table: 'popular_models', title: 'Most used models' };
+  } else if (wantLatency) {
+    const groups = new Map();
+    for (const r of rows) {
+      if (!r.ok || typeof r.latencyMs !== 'number') continue;
+      const key = r.endpoint || '(unknown)';
+      const arr = groups.get(key) || [];
+      arr.push(r.latencyMs);
+      groups.set(key, arr);
+    }
+    const quant = (arr,q)=>{ if(!arr.length) return 0; const a=arr.slice().sort((x,y)=>x-y); const pos=(a.length-1)*q; const b=Math.floor(pos); const rest=pos-b; return a[b+1]!==undefined ? a[b]+rest*(a[b+1]-a[b]) : a[b]; };
+    const items = Array.from(groups.entries()).map(([k,arr])=>[k, Math.round(quant(arr,0.95))]).sort((a,b)=>b[1]-a[1]).slice(0,7);
+    if (items.length) {
+      dataTables.push({ name:'latency_by_endpoint', rows: items });
+      dataContext = { table: 'latency_by_endpoint', title: 'Endpoint p95 latency' };
+    }
+  } else if (wantError || want429) {
+    dataContext = { table: 'errors_by_status', title: 'Errors by status' };
+  } else if (wantCost) {
+    dataContext = { table: 'tokens_summary', title: 'Tokens' };
+  }
+
+  let answer = wantPopularityModel
+    ? [popularityBlock, details.join(' • '), logSnippet].filter(Boolean).join('\n')
+    : [baseLine, details.join(' • '), logSnippet].filter(Boolean).join('\n');
+  const useLLM = body.llm === true && !!process.env.OPENAI_API_KEY;
+  if (!useLLM && wantJoke) {
+    answer = "Why do programmers prefer dark mode? Because light attracts bugs.";
+  }
+  let usedLLM = false;
+  let llmModel = null; let llmTried = false; let llmStatus = null;
+  if (useLLM) {
       try {
-        const sys = `You are an SRE assistant. Summarize reliability for the given time window. Include: total, SLI%, p50/p95/p99, top error statuses, and a short recommendation. Keep it concise.`;
-        const ctx = `Window: ${new Date(from).toISOString()} to ${new Date(to).toISOString()}\n`+
-          `Endpoint: ${endpoint||'all'}\n`+
-          `Total: ${total}\nOK: ${ok}\nSLI: ${(sli*100).toFixed(2)}%\n`+
-          `Latency: p50=${p50??'–'}ms p95=${p95??'–'}ms p99=${p99??'–'}ms\n`+
-          `Top statuses: ${topStatuses||'—'}\n`+
-          `User question: ${userMsg || '(none)'}\n`+
-          `Top logs: ${logs.slice(0,5).map(l=>`[${new Date(l.ts).toISOString()}] ${l.status} ${l.endpoint} ${l.model||''} ${l.region||''} ${String(l.text||'').slice(0,160)}`).join('\n')}`;
+        llmTried = true;
+        const sys = wantPopularityModel
+          ? `You are an SRE/analytics assistant. Answer the user's question directly using the provided context. If they ask for the most used model, identify the top model by count, include its share %, and list the next few. Keep it concise and explanatory.`
+          : (wantJoke
+            ? `Tell ONE short, clean, family-friendly programming joke. No preface, just the joke in one or two lines.`
+            : `You are an SRE assistant. Summarize reliability for the given time window. Include: total, SLI%, p50/p95/p99, top error statuses, and a short recommendation. Keep it concise.`);
+        let popularityFacts = '';
+        if (wantPopularityModel) {
+          try {
+            let facts = [];
+            if (db) {
+              const params = { from, to };
+              let sql = `SELECT model AS key, COUNT(1) AS c FROM logs_raw WHERE ts BETWEEN @from AND @to AND model IS NOT NULL AND model <> ''`;
+              if (endpoint) { sql += ` AND endpoint = @endpoint`; params.endpoint = endpoint; }
+              sql += ` GROUP BY model ORDER BY c DESC LIMIT 10`;
+              const rowsM = db.prepare(sql).all(params);
+              facts = rowsM.map(r=>`${r.key}: ${r.c}`).join(', ');
+            }
+            if (!facts) {
+              const counts = rows.reduce((acc,r)=>{ const k=r.model||'(unknown)'; acc[k]=(acc[k]||0)+1; return acc; },{});
+              const ordered = Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([k,v])=>`${k}: ${v}`).join(', ');
+              facts = ordered;
+            }
+            popularityFacts = `Model usage (count): ${facts}`;
+          } catch {}
+        }
+        const ctx = wantJoke
+          ? `User question: ${userMsg || '(none)'}\n`
+          : (
+            `Window: ${new Date(from).toISOString()} to ${new Date(to).toISOString()}\n`+
+            `Endpoint: ${endpoint||'all'}\n`+
+            (wantPopularityModel? `${popularityFacts}\n` :
+              `Total: ${total}\nOK: ${ok}\nSLI: ${(sli*100).toFixed(2)}%\nLatency: p50=${p50??'–'}ms p95=${p95??'–'}ms p99=${p99??'–'}ms\nTop statuses: ${topStatuses||'—'}\n`)+
+            `User question: ${userMsg || '(none)'}\n`+
+            `Top logs: ${logs.slice(0,5).map(l=>`[${new Date(l.ts).toISOString()}] ${l.status} ${l.endpoint} ${l.model||''} ${l.region||''} ${String(l.text||'').slice(0,160)}`).join('\n')}`
+          );
+  llmModel = process.env.OPENAI_RESPONSES_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini';
         const r = await fetch('https://api.openai.com/v1/responses', {
           method: 'POST',
           headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` },
-          body: JSON.stringify({ model: process.env.OPENAI_MODEL || 'gpt-4o-mini', input: [
-            { role: 'system', content: [ { type: 'text', text: sys } ] },
-            { role: 'user', content: [ { type: 'text', text: ctx } ] }
+          body: JSON.stringify({ model: llmModel, input: [
+            { role: 'system', content: [ { type: 'input_text', text: sys } ] },
+            { role: 'user', content: [ { type: 'input_text', text: ctx } ] }
           ], max_output_tokens: 400, temperature: 0.2 })
         });
-        if (r.ok) { const j = await r.json(); const txt = j?.output_text || j?.content?.[0]?.text || null; if (txt) answer = txt; }
-      } catch {}
+    llmStatus = r.status;
+  if (r.ok) { const j = await r.json(); const txt = extractResponsesText(j); if (txt) { answer = txt; usedLLM = true; } }
+  else if (llmModel !== 'gpt-4o-mini') {
+    try {
+      const fallbackModel = 'gpt-4o-mini';
+      const rf = await fetch('https://api.openai.com/v1/responses', {
+        method: 'POST', headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` },
+        body: JSON.stringify({ model: fallbackModel, input: [
+          { role: 'system', content: [ { type: 'input_text', text: sys } ] },
+          { role: 'user', content: [ { type: 'input_text', text: ctx } ] }
+        ], max_output_tokens: 400, temperature: 0.2 })
+      });
+      llmStatus = rf.status; llmModel = fallbackModel;
+  if (rf.ok) { const jf = await rf.json(); const txt2 = extractResponsesText(jf); if (txt2) { answer = txt2; usedLLM = true; } }
+    } catch {}
+  }
+        console.log('[ai/chat/stream] LLM', { tried: llmTried, used: usedLLM, status: llmStatus, model: llmModel });
+      } catch(e) {
+        console.warn('[ai/chat/stream] LLM failed', String(e?.message||e));
+      }
     }
 
     function write(obj){ try { res.write(JSON.stringify(obj)+'\n'); } catch(_){} }
@@ -526,7 +976,45 @@ app.post('/ai/chat/stream', async (req, res) => {
     const parts = String(answer).split(/(\s+)/); // keep whitespace
     for (const p of parts) write({ delta: p });
     const citations = { logs: logs.map(l=>l.id), metrics: ['summary'] };
-    write({ done: true, citations });
+    const tokensTotal = rows.reduce((a,r)=>a+(r.tokensTotal||0),0);
+    const tokensPrompt = rows.reduce((a,r)=>a+(r.tokensPrompt||0),0);
+    const tokensCompletion = rows.reduce((a,r)=>a+(r.tokensCompletion||0),0);
+    const topErrs = Object.entries(byStatus).sort((a,b)=>b[1]-a[1]).slice(0,5);
+    const summary = {
+      range: { from: new Date(from).toISOString(), to: new Date(to).toISOString() },
+      endpoint: endpoint || 'all',
+      totals: { total, ok, sli },
+      latency: { p50: p50||0, p95: p95||0, p99: p99||0 },
+      errors: topErrs,
+      tokens: { prompt: tokensPrompt, completion: tokensCompletion, total: tokensTotal }
+    };
+    function buildNarrative(){
+      const sliPct = (sli*100).toFixed(2);
+      const health = sli>=0.995? 'SLA likely being met' : sli>=0.985? 'SLA slightly degraded' : 'SLA degraded';
+      const errTopEntry = Object.entries(byStatus).sort((a,b)=>b[1]-a[1])[0];
+      let errMsg = '';
+      if (errTopEntry){
+        const [code, cnt] = errTopEntry; const rate = total? ((cnt/total)*100).toFixed(1) : '0.0';
+        if (String(code)==='429') errMsg = `Rate limiting (${rate}% of requests) is the top error.`;
+        else if (/^5\d\d$/.test(String(code))) errMsg = `Server errors ${code} are elevated (${rate}%).`;
+        else if (Number(code)>=400) errMsg = `Client errors ${code} observed (${rate}%).`;
+      }
+      const latMsg = (p95!=null && p99!=null) ? `Latency is stable with p95 ${p95} ms and p99 ${p99} ms.` : '';
+      let extra='';
+      if (wantPopularityModel && popularityBlock) extra = popularityBlock;
+      else if (wantLatency){
+        const slowest = rows.filter(r=>r.ok).sort((a,b)=>b.latencyMs-a.latencyMs).slice(0,2).map(r=>`${r.latencyMs} ms ${r.endpoint}`).join('; ');
+        if (slowest) extra = `Slowest successful calls: ${slowest}.`;
+      } else if (wantError && errTopEntry){ extra = `Top statuses: ${topStatuses}.`; }
+      const parts = [ `${health} (SLI ${sliPct}%).`, latMsg, errMsg, extra ].filter(Boolean);
+      return parts.join(' ');
+    }
+    const data = { tables: [
+      { name:'errors_by_status', rows: Object.entries(byStatus) },
+      { name:'lat_percentiles', rows: [['p50', p50||0], ['p95', p95||0], ['p99', p99||0]] },
+      { name:'tokens_summary', rows: [['prompt', tokensPrompt], ['completion', tokensCompletion], ['total', tokensTotal]] }
+  ].concat(dataTables), context: dataContext };
+  write({ done: true, citations, data, summary, narrative: usedLLM ? answer : buildNarrative(), usedLLM, llmModel, llmTried, llmStatus });
     try { res.end(); } catch(_){}
   } catch (e) {
     console.error('[ai/chat/stream] failed', e);

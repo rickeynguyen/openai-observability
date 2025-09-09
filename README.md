@@ -114,6 +114,8 @@ SDKs:
 Flags:
 - ENABLE_AI=1, ENABLE_DB=1, OPENAI_API_KEY, EMBEDDING_MODEL=text-embedding-3-small (default)
 - LOG_SIM_ENABLED=1 (optional), LOG_SIM_INTERVAL_MS=30000
+ - INGEST_API_KEY=secret (UI default). Change if you want a different key; enter it in the Chat tab.
+ - EMB_INDEX_INTERVAL_MS=45000 (auto-index tick)
 
 Endpoints:
 - POST /logs/ingest (NDJSON or JSON array, requires INGEST_API_KEY)
@@ -132,4 +134,11 @@ Quick start for Chat tab:
 1. Set `ENABLE_DB=1`, `ENABLE_AI=1`, `INGEST_API_KEY=your-secret`. Optionally set `OPENAI_API_KEY` for embeddings and LLM enhancement.
 2. Start the server, open the dashboard, switch to Chat, enter your ingest key, Start simulator, optionally Index embeddings, and ask a question.
 3. Toggle "Use LLM" in the Chat tab to get an enhanced summary (requires `OPENAI_API_KEY`).
+
+Notes:
+- If `LOG_SIM_ENABLED=1`, the server auto-starts the simulator. The Chat tab shows a subtle notice so the Start/Stop button state makes sense. Use Stop to pause the timer for this session; on restart it will auto-start again unless you set `LOG_SIM_ENABLED=0`.
+- The UI defaults the ingest key to `secret`. Set `INGEST_API_KEY=secret` (or change both sides) to avoid 401s when controlling the simulator or indexer.
+
+Misc:
+- `GET /config` returns non-sensitive runtime flags (ai/db enabled, sim/index intervals) for the UI.
 

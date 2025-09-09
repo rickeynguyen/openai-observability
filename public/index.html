@@ -27,6 +27,17 @@
   .btn-danger:hover{background:#991b1b;border-color:#7f1d1d}
   .btn-accent{background:#7c3aed;border-color:#6d28d9;color:#ffffff}
   .btn-accent:hover{background:#6d28d9;border-color:#5b21b6}
+  /* Minimal markdown styling scoped to answer/narrative */
+  #chatAnswer, #chatNarrative { white-space: normal; }
+  #chatAnswer h1,#chatAnswer h2,#chatAnswer h3,#chatAnswer h4,#chatAnswer h5,#chatAnswer h6{margin:6px 0 4px;font-weight:700}
+  #chatAnswer p{margin:6px 0}
+  #chatAnswer ul,#chatAnswer ol{margin:6px 0 6px 18px}
+  #chatAnswer li{margin:2px 0}
+  #chatAnswer code{background:#0f172a;border:1px solid #243244;padding:0 4px;border-radius:4px;font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;font-size:12px}
+  #chatAnswer pre{background:#0f172a;border:1px solid #243244;padding:8px;border-radius:6px;overflow:auto}
+  #chatAnswer pre code{border:none;padding:0}
+  #chatAnswer a{color:#93c5fd;text-decoration:underline}
+  #chatAnswer blockquote{border-left:3px solid #334155;margin:6px 0;padding:4px 8px;background:#0f172a}
     </style>
   </head>
   <body>
@@ -38,8 +49,9 @@
             <option value="15">15m</option><option value="30">30m</option><option value="60" selected>60m</option><option value="180">3h</option><option value="720">12h</option><option value="1440">24h</option><option value="4320">3d</option><option value="10080">7d</option><option value="20160">14d</option><option value="43200">30d</option><option value="129600">90d</option>
           </select>
         </label>
-        <label class="muted" style="font-size:12px;display:flex;flex-direction:column;gap:2px"><span>From:</span><input id="fromTs" type="datetime-local" style="background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:4px 6px;font-size:12px" /></label>
-        <label class="muted" style="font-size:12px;display:flex;flex-direction:column;gap:2px"><span>To:</span><input id="toTs" type="datetime-local" style="background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:4px 6px;font-size:12px" /></label>
+  <label class="muted" style="font-size:12px;display:flex;align-items:center;gap:6px"><input id="useCustomRange" type="checkbox" /> Use custom range</label>
+  <label class="muted" style="font-size:12px;display:flex;flex-direction:column;gap:2px"><span>From:</span><input id="fromTs" type="datetime-local" style="background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:4px 6px;font-size:12px" /></label>
+  <label class="muted" style="font-size:12px;display:flex;flex-direction:column;gap:2px"><span>To:</span><input id="toTs" type="datetime-local" style="background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:4px 6px;font-size:12px" /></label>
         <button id="applyRange" style="background:#2563eb;border:1px solid #1d4ed8;color:#e5e7eb;border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer">Apply</button>
         <label class="muted" style="font-size:12px;display:flex;align-items:center;gap:4px">Endpoint:
           <select id="endpointFilter" size="1" style="min-width:200px;background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:4px 6px;font-size:12px"></select>
@@ -216,9 +228,10 @@
           <button id="chatToggleSim" class="btn btn-primary" type="button">Start log simulator</button>
           <button id="chatToggleIndex" class="btn btn-accent" type="button">Enable auto-index</button>
           <span class="muted">Uses current endpoint and time range</span>
+          <span id="simAutoNotice" class="muted" style="display:none; padding:2px 6px; border:1px solid #334155; border-radius:6px; background:#0f172a;">Simulator auto-start is enabled by server config</span>
           <span style="margin-left:auto; display:flex; gap:6px; align-items:center;">
             <label class="muted">Ingest key:</label>
-            <input id="chatKey" type="password" placeholder="x-api-key" style="width:180px;background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:4px 6px;" />
+            <input id="chatKey" type="password" placeholder="x-api-key (default: secret)" style="width:180px;background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:4px 6px;" />
           </span>
           <span id="chatOpsMsg" class="muted"></span>
         </div>
@@ -246,6 +259,9 @@
           <label style="display:flex; gap:6px; align-items:center;">
             <input id="chatUseLlm" type="checkbox" /> Use LLM
           </label>
+          <label style="display:flex; gap:6px; align-items:center;" title="When on and LLM is used, Answer shows the LLM text; the structured summary moves to Narrative.">
+            <input id="chatReplace" type="checkbox" /> Replace Answer with LLM
+          </label>
           <span class="muted">Tip: templates and reasons pre-fill the box; edit before sending.</span>
         </div>
         <div style="display:flex;gap:8px;align-items:flex-start;">
@@ -257,21 +273,122 @@
         </div>
       </div>
       <div class="row">
-        <div class="card" style="flex:2; min-height:160px;">
-          <div style="font-weight:600; margin-bottom:6px;">Answer</div>
-          <div id="chatAnswer" style="white-space:pre-wrap; font-size:13px; line-height:1.35">—</div>
+        <div class="card" style="flex:1; min-width:320px; min-height:220px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; gap:8px;">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <div style="font-weight:600;">Answer</div>
+              <span id="llmBadge" class="pill" style="display:none; background:#a78bfa; color:#0b0f14; font-weight:700;">LLM</span>
+            </div>
+            <button id="copySummaryBtn" class="btn" type="button" disabled title="Copy summary to clipboard">Copy summary</button>
+          </div>
+          <div id="chatCallout" style="display:none; margin-bottom:8px; padding:6px 8px; border-radius:6px; border:1px solid #243244; background:#0f172a; font-size:12px; font-weight:600;"></div>
+          <div id="chatNarrative" style="display:none; margin-bottom:8px; font-size:13px; line-height:1.35"></div>
+          <div id="chatAnswer" style="font-size:13px; line-height:1.35">—</div>
+          <div id="chatAnswerMeta" class="muted" style="font-size:11px; margin-top:6px;"></div>
+          <div id="chatSwapHint" class="muted" style="font-size:11px; margin-top:4px; display:none;">Structured summary moved below.</div>
         </div>
-        <div class="card" style="flex:1; min-width:280px;">
-          <div style="font-weight:600; margin-bottom:6px;">Citations</div>
-          <div id="chatCitations" class="muted" style="font-size:12px">—</div>
+        <div class="card" style="flex:1; min-width:320px; min-height:220px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <div style="font-weight:600;">Diagram</div>
+            <label class="muted" style="font-size:12px; display:flex; gap:6px; align-items:center;">
+              View:
+              <select id="chatDiagramMode" style="background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:2px 6px;">
+                <option value="auto" selected>Auto</option>
+                <option value="errors">Errors</option>
+                <option value="latency">Latency</option>
+                <option value="tokens">Tokens</option>
+              </select>
+            </label>
+          </div>
+          <canvas id="chatDiagramCanvas" height="200" style="width:100%; background:#0f172a; border:1px solid #243244; border-radius:6px;"></canvas>
+          <div id="chatDiagramEmpty" class="muted" style="font-size:12px; display:none;">No data to visualize.</div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <div style="font-weight:600;">Logs in selected range</div>
+          <div id="chatLogsMeta" class="muted" style="font-size:12px"></div>
+        </div>
+        <div style="overflow:auto; max-height:240px; margin-top:8px;">
+          <table id="chatLogsTable" style="width:100%; border-collapse:collapse; font-size:12px;">
+            <thead>
+              <tr>
+                <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Time</th>
+                <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Status</th>
+                <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Endpoint</th>
+                <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Model</th>
+                <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Region</th>
+                <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Text</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
         </div>
       </div>
     </div>
     <footer>Auto-refresh every 15s. Probes: multiple endpoints (round-robin by default).</footer>
     <script>
+      // Lightweight Markdown renderer with sanitization (basic headings, emphasis, code, links, lists, blockquotes)
+      function mdEscapeHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+      function mdAttrEscape(s){return String(s||'').replace(/"/g,'&quot;').replace(/</g,'').replace(/>/g,'');}
+      function mdToHtml(input){
+        try{
+          if(!input) return '';
+          let src = String(input);
+          // Extract fenced code blocks first
+          const blocks=[];
+          src = src.replace(/```([a-zA-Z0-9_+-]+)?\n([\s\S]*?)```/g,(m,lang,code)=>{const idx=blocks.push({lang:lang||'', code:code})-1;return `\u0000CODEBLOCK${idx}\u0000`;});
+          // Escape remaining HTML
+          src = mdEscapeHtml(src);
+          // Headings
+          src = src.replace(/^######\s+(.*)$/gm,'<h6>$1</h6>')
+                   .replace(/^#####\s+(.*)$/gm,'<h5>$1</h5>')
+                   .replace(/^####\s+(.*)$/gm,'<h4>$1</h4>')
+                   .replace(/^###\s+(.*)$/gm,'<h3>$1</h3>')
+                   .replace(/^##\s+(.*)$/gm,'<h2>$1</h2>')
+                   .replace(/^#\s+(.*)$/gm,'<h1>$1</h1>');
+          // Blockquotes
+          src = src.replace(/^>\s?(.*)$/gm,'<blockquote>$1</blockquote>');
+          // Lists (unordered)
+          src = src.replace(/^(?:\s*[-*]\s+.*(?:\n|$))+?/gm, (m)=>{
+            const items = m.trim().split(/\n/).map(l=>l.replace(/^\s*[-*]\s+/,'').trim()).filter(Boolean);
+            return '<ul>'+items.map(t=>'<li>'+t+'</li>').join('')+'</ul>';
+          });
+          // Lists (ordered)
+          src = src.replace(/^(?:\s*\d+\.\s+.*(?:\n|$))+?/gm, (m)=>{
+            const items = m.trim().split(/\n/).map(l=>l.replace(/^\s*\d+\.\s+/,'').trim()).filter(Boolean);
+            return '<ol>'+items.map(t=>'<li>'+t+'</li>').join('')+'</ol>';
+          });
+          // Inline code
+          src = src.replace(/`([^`]+?)`/g,'<code>$1</code>');
+          // Bold and italic (order matters)
+          src = src.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+          src = src.replace(/\*([^*]+)\*/g,'<em>$1</em>');
+          // Links [text](url)
+          src = src.replace(/\[([^\]]+)]\(([^)\s]+)\)/g,(m,txt,url)=>{
+            try{ const safeUrl = mdAttrEscape(url); return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${txt}</a>`; }catch{ return txt; }
+          });
+          // Paragraphs: split by double newlines not already converted
+          src = src.replace(/(?:^|\n)([^<\n][^\n]*)(?=\n|$)/g, (m, line)=>{
+            if(/^(<h\d|<ul>|<ol>|<blockquote>|<pre>|<p>|<hr|<div)/.test(line.trim())) return '\n'+line; // already wrapped
+            const t=line.trim(); if(!t) return '';
+            return '\n<p>'+t+'</p>';
+          });
+          // Restore code blocks (escape inside now)
+          src = src.replace(/\u0000CODEBLOCK(\d+)\u0000/g,(m,idx)=>{
+            const b = blocks[Number(idx)]; if(!b) return '';
+            const codeHtml = mdEscapeHtml(b.code.replace(/^\n+|\n+$/g,''));
+            const lang = mdAttrEscape(b.lang);
+            const cls = lang? ` class="lang-${lang}"` : '';
+            return `<pre><code${cls}>${codeHtml}</code></pre>`;
+          });
+          return src;
+        }catch(_){ return mdEscapeHtml(String(input)); }
+      }
       const traceState={cursor:null,direction:'prev',serverCursors:null,currentPage:[],sort:{key:'ts',dir:'desc'}};
       function selectedEndpoints(){const v=document.getElementById('endpointFilter').value;return (!v||v==='__all__')?[]:[v];}
-      function getWindow(){return Number(document.getElementById('windowSelect').value);} function toEpoch(dt){return dt?new Date(dt).getTime():null;} function absoluteRange(){const f=toEpoch(document.getElementById('fromTs').value);const t=toEpoch(document.getElementById('toTs').value);return (f&&t&&t>f)?{from:f,to:t}:null;}
+  function getWindow(){return Number(document.getElementById('windowSelect').value);} function toEpoch(dt){return dt?new Date(dt).getTime():null;} function absoluteRange(){const use=document.getElementById('useCustomRange');if(!use||!use.checked) return null;const f=toEpoch(document.getElementById('fromTs').value);const t=toEpoch(document.getElementById('toTs').value);return (f&&t&&t>f)?{from:f,to:t}:null;}
+  function updateRangeInputsEnabled(){const use=document.getElementById('useCustomRange');const on=!!(use&&use.checked);['fromTs','toTs','applyRange'].forEach(id=>{const el=document.getElementById(id);if(el){el.disabled=!on;el.style.opacity=on?"1":"0.6";el.style.pointerEvents=on?"auto":"none";}});}
       async function load(resetCursor=true){try{const win=getWindow();const eps=selectedEndpoints();const abs=absoluteRange();const query=abs?new URLSearchParams({from:String(abs.from),to:String(abs.to)}):new URLSearchParams({window:String(win)});if(eps.length) query.set('endpoint',eps.join(','));const traceParams=new URLSearchParams(query.toString());traceParams.set('limit','200');if(traceState.cursor&&!resetCursor){traceParams.set('cursor',String(traceState.cursor));traceParams.set('direction',traceState.direction);} if(document.getElementById('errorsOnly').checked) traceParams.set('errorsOnly','1');const slowVal=document.getElementById('slowMs').value;if(slowVal) traceParams.set('slowMs',slowVal);const [statusRes,tracesRes]=await Promise.all([
         fetch('/status?'+query.toString(),{cache:'no-store'}),
         fetch('/traces?'+traceParams.toString(),{cache:'no-store'})
@@ -295,33 +412,290 @@
       async function exportAllTraces(fmt){try{const win=getWindow();const eps=selectedEndpoints();const abs=absoluteRange();const base=abs?new URLSearchParams({from:String(abs.from),to:String(abs.to)}):new URLSearchParams({window:String(win)});if(eps.length) base.set('endpoint',eps.join(','));if(document.getElementById('errorsOnly').checked) base.set('errorsOnly','1');const slowVal=document.getElementById('slowMs').value;if(slowVal) base.set('slowMs',slowVal);let all=[];let cursor=null;let direction='prev';const limit=500;let safety=0;while(safety<50){const qp=new URLSearchParams(base.toString());qp.set('limit',String(limit));if(cursor){qp.set('cursor',String(cursor));qp.set('direction',direction);}const r=await fetch('/traces?'+qp.toString());const j=await r.json();all=all.concat(j.points);if(!j.cursor||!j.cursor.next||j.points.length<limit) break;cursor=j.cursor.next;direction='prev';safety++;}if(fmt==='json')return download('traces_all.json',JSON.stringify(all,null,2));const header=['iso','status','ok','latencyMs','endpoint','model','region','errType','tokensTotal','tokensPrompt','tokensCompletion','respBytes'];const lines=[header.join(','),...all.map(r=>header.map(h=>r[h]??'').join(','))];download('traces_all.csv',lines.join('\n'));}catch(e){console.error('export all traces failed',e);}}
   async function fetchLatencyHistogram(ep,id,abs,win){try{const params=abs?new URLSearchParams({from:String(abs.from),to:String(abs.to),endpoint:ep}):new URLSearchParams({window:String(win),endpoint:ep});const r=await fetch('/latency_histogram?'+params.toString(),{cache:'no-store'});const j=await r.json();const canvas=document.getElementById(id);if(!canvas)return;const ctx=canvas.getContext('2d');ctx.clearRect(0,0,canvas.width,canvas.height);if(!j.buckets||!j.buckets.length){ctx.fillStyle='#64748b';ctx.font='10px system-ui';ctx.fillText('no data',4,16);return;}const maxC=Math.max(...j.buckets.map(b=>b.count));const w=canvas.clientWidth||canvas.width;const h=canvas.height;const barW=w/j.buckets.length;j.buckets.forEach((b,i)=>{const bh=(b.count/maxC)*(h-4);ctx.fillStyle='#3b82f6';ctx.fillRect(i*barW,h-bh,barW-1,bh);});}catch(e){}}
     function download(filename,text){const blob=new Blob([text],{type:'text/plain'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),4000);}function setActiveTab(id){['viewSummary','viewTraces','viewChat'].forEach(x=>{const el=document.getElementById(x);if(el){if(x===id)el.classList.add('active');else el.classList.remove('active');}})}
-  document.getElementById('windowSelect').addEventListener('change',()=>{syncPresetToRange();load(true);updateEnhancements();});document.getElementById('applyRange').addEventListener('click',()=>{load(true);updateEnhancements();});document.getElementById('endpointFilter').addEventListener('change',()=>{load(true);updateEnhancements();});document.getElementById('exportCsv').addEventListener('click',exportCsv);document.getElementById('exportJson').addEventListener('click',exportJson);document.getElementById('viewSummary').addEventListener('click',()=>{document.getElementById('tracesContainer').style.display='none';document.getElementById('chatContainer').style.display='none';document.getElementById('cards').style.display='flex';document.getElementById('enhancements').style.display='block';setActiveTab('viewSummary');});document.getElementById('viewTraces').addEventListener('click',()=>{document.getElementById('cards').style.display='none';document.getElementById('enhancements').style.display='none';document.getElementById('chatContainer').style.display='none';document.getElementById('tracesContainer').style.display='block';setActiveTab('viewTraces');});document.getElementById('viewChat').addEventListener('click',()=>{document.getElementById('cards').style.display='none';document.getElementById('enhancements').style.display='none';document.getElementById('tracesContainer').style.display='none';document.getElementById('chatContainer').style.display='block';setActiveTab('viewChat');});document.getElementById('applyTraceFilters').addEventListener('click',()=>load(true));document.getElementById('prevPage').addEventListener('click',()=>{if(!traceState.serverCursors)return;traceState.cursor=traceState.serverCursors.prev;traceState.direction='next';load(false);});document.getElementById('nextPage').addEventListener('click',()=>{if(!traceState.serverCursors)return;traceState.cursor=traceState.serverCursors.next;traceState.direction='prev';load(false);});document.getElementById('exportTraceCsv').addEventListener('click',()=>exportTrace('csv'));document.getElementById('exportTraceJson').addEventListener('click',()=>exportTrace('json'));document.getElementById('exportTraceAllCsv').addEventListener('click',()=>exportAllTraces('csv'));document.getElementById('exportTraceAllJson').addEventListener('click',()=>exportAllTraces('json'));document.getElementById('traceHeaderRow').addEventListener('click',ev=>{const th=ev.target.closest('th');if(!th||!th.dataset.k)return;const k=th.dataset.k;if(traceState.sort.key===k){traceState.sort.dir=traceState.sort.dir==='asc'?'desc':'asc';}else{traceState.sort.key=k;traceState.sort.dir='asc';}load(false);});
+  document.getElementById('windowSelect').addEventListener('change',()=>{syncPresetToRange();load(true);updateEnhancements();refreshChatLogs();});
+  document.getElementById('useCustomRange').addEventListener('change',()=>{updateRangeInputsEnabled();load(true);updateEnhancements();refreshChatLogs();});
+  document.getElementById('applyRange').addEventListener('click',()=>{load(true);updateEnhancements();refreshChatLogs();});
+  document.getElementById('endpointFilter').addEventListener('change',()=>{load(true);updateEnhancements();refreshChatLogs();});
+  document.getElementById('exportCsv').addEventListener('click',exportCsv);
+  document.getElementById('exportJson').addEventListener('click',exportJson);
+  document.getElementById('viewSummary').addEventListener('click',()=>{
+    document.getElementById('tracesContainer').style.display='none';
+    document.getElementById('chatContainer').style.display='none';
+    document.getElementById('cards').style.display='flex';
+    document.getElementById('enhancements').style.display='block';
+    setActiveTab('viewSummary');
+    stopChatLogsTimer();
+  });
+  document.getElementById('viewTraces').addEventListener('click',()=>{
+    document.getElementById('cards').style.display='none';
+    document.getElementById('enhancements').style.display='none';
+    document.getElementById('chatContainer').style.display='none';
+    document.getElementById('tracesContainer').style.display='block';
+    setActiveTab('viewTraces');
+    stopChatLogsTimer();
+  });
+  document.getElementById('viewChat').addEventListener('click',()=>{
+    document.getElementById('cards').style.display='none';
+    document.getElementById('enhancements').style.display='none';
+    document.getElementById('tracesContainer').style.display='none';
+    document.getElementById('chatContainer').style.display='block';
+    setActiveTab('viewChat');
+    refreshChatLogs();
+    startChatLogsTimer();
+  });
+  document.getElementById('applyTraceFilters').addEventListener('click',()=>load(true));
+  document.getElementById('prevPage').addEventListener('click',()=>{if(!traceState.serverCursors)return;traceState.cursor=traceState.serverCursors.prev;traceState.direction='next';load(false);});
+  document.getElementById('nextPage').addEventListener('click',()=>{if(!traceState.serverCursors)return;traceState.cursor=traceState.serverCursors.next;traceState.direction='prev';load(false);});
+  document.getElementById('exportTraceCsv').addEventListener('click',()=>exportTrace('csv'));
+  document.getElementById('exportTraceJson').addEventListener('click',()=>exportTrace('json'));
+  document.getElementById('exportTraceAllCsv').addEventListener('click',()=>exportAllTraces('csv'));
+  document.getElementById('exportTraceAllJson').addEventListener('click',()=>exportAllTraces('json'));
+  document.getElementById('traceHeaderRow').addEventListener('click',ev=>{const th=ev.target.closest('th');if(!th||!th.dataset.k)return;const k=th.dataset.k;if(traceState.sort.key===k){traceState.sort.dir=traceState.sort.dir==='asc'?'desc':'asc';}else{traceState.sort.key=k;traceState.sort.dir='asc';}load(false);});
       // Chat actions
+  function drawChatBarChart(canvas, labels, values){
+        if(!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const w = canvas.clientWidth || canvas.width; const h = canvas.height; canvas.width = w; // fix blur
+        ctx.clearRect(0,0,w,h);
+        if(!labels.length || !values.length){ return; }
+        const maxV = Math.max(1, ...values);
+        const pad = 24; const barGap = 8;
+        const n = values.length; const barW = Math.max(8, Math.floor((w - pad*2 - (n-1)*barGap)/n));
+        // axes
+        ctx.strokeStyle = '#334155'; ctx.beginPath(); ctx.moveTo(pad, h - pad); ctx.lineTo(w - 6, h - pad); ctx.moveTo(pad, h - pad); ctx.lineTo(pad, 6); ctx.stroke();
+        // bars
+        for(let i=0;i<n;i++){
+          const v = values[i]; const x = pad + i*(barW+barGap); const bh = Math.round(((v/maxV) * (h - pad*2)));
+          ctx.fillStyle = '#3b82f6'; ctx.fillRect(x, h - pad - bh, barW, bh);
+          // labels (x)
+          ctx.fillStyle = '#9ca3af'; ctx.font = '10px system-ui';
+          const lbl = String(labels[i]);
+          const tw = ctx.measureText(lbl).width;
+          ctx.save(); ctx.translate(x + barW/2, h - pad + 12); ctx.rotate(-Math.PI/8);
+          ctx.fillText(lbl, -tw/2, 0); ctx.restore();
+          // values
+          ctx.fillStyle = '#e5e7eb'; ctx.font = '11px system-ui';
+          const val = String(v);
+          const vw = ctx.measureText(val).width;
+          ctx.fillText(val, x + barW/2 - vw/2, h - pad - bh - 4);
+        }
+      }
+
+      let chatDiagramLastData = null;
+      let chatLastSummary = null;
+      function computeCallout(summary){
+        try{
+          const total = Number(summary?.totals?.total||0);
+          const ok = Number(summary?.totals?.ok||0);
+          const sli = Number(summary?.totals?.sli|| (total? ok/total : 1));
+          const top = (summary?.errors||[])[0] || null; // [status,count]
+          const errRate = 1 - sli;
+          // Low traffic => neutral
+          if (total < 30) return { text: 'Low traffic — limited signal', color:'#0b1220', border:'#1f2937', fg:'#93c5fd' };
+          // Healthy
+          if (sli >= 0.995 && errRate <= 0.005) return { text: 'SLA likely being met', color:'#073a2a', border:'#14532d', fg:'#34d399' };
+          if (sli >= 0.99 && errRate <= 0.02) return { text: 'Healthy — within target', color:'#073a2a', border:'#14532d', fg:'#34d399' };
+          // Specific conditions
+          if (top && String(top[0])==='429' && (top[1]/total)>=0.05) return { text: 'Rate limiting observed', color:'#3b2f07', border:'#92400e', fg:'#f59e0b' };
+          if (top && /^5\d\d$/.test(String(top[0])) && (top[1]/total)>=0.05) return { text: 'Server errors elevated', color:'#3a0e14', border:'#7f1d1d', fg:'#fb7185' };
+          // Aggregate thresholds
+          if (errRate >= 0.20) return { text: 'Error burst detected', color:'#3a0e14', border:'#7f1d1d', fg:'#fb7185' };
+          if (sli >= 0.985) return { text: 'SLA slightly degraded', color:'#3b2f07', border:'#92400e', fg:'#f59e0b' };
+          if (errRate >= 0.12) return { text: 'Elevated errors', color:'#3b2f07', border:'#92400e', fg:'#f59e0b' };
+          return { text: 'Minor blips', color:'#0b1220', border:'#1f2937', fg:'#93c5fd' };
+        }catch(_){ return null; }
+      }
+      function showCallout(summary){
+        const el=document.getElementById('chatCallout'); if(!el){return;}
+        const c=computeCallout(summary); if(!c){ el.style.display='none'; return; }
+        el.textContent=c.text; el.style.display='block'; el.style.background=c.color; el.style.borderColor=c.border; el.style.color=c.fg;
+      }
+      function hideCallout(){ const el=document.getElementById('chatCallout'); if(el){ el.style.display='none'; el.textContent=''; } }
+      function buildSummaryText(summary){
+        const lines=[]; if(!summary) return '';
+        const sliPct=(Number(summary.totals?.sli||0)*100).toFixed(2)+'%';
+        const errs=(summary.errors||[]).map(([k,v])=>`${k}: ${v}`).join(', ');
+        lines.push(`Range: ${summary.range?.from||'—'} -> ${summary.range?.to||'—'}`);
+        lines.push(`Endpoint: ${summary.endpoint||'all'}`);
+        lines.push(`Totals: total=${summary.totals?.total??0}, ok=${summary.totals?.ok??0}, sli=${sliPct}`);
+        lines.push(`Latency (ms): p50=${summary.latency?.p50??0}, p95=${summary.latency?.p95??0}, p99=${summary.latency?.p99??0}`);
+        lines.push(`Top errors: ${errs||'—'}`);
+        lines.push(`Tokens: prompt=${summary.tokens?.prompt??0}, completion=${summary.tokens?.completion??0}, total=${summary.tokens?.total??0}`);
+        return lines.join('\n');
+      }
+      (function initCopySummary(){
+        const btn=document.getElementById('copySummaryBtn'); if(!btn) return;
+        btn.addEventListener('click', async ()=>{
+          try{
+            const text=buildSummaryText(chatLastSummary);
+            if(!text){ btn.disabled=true; return; }
+            await navigator.clipboard.writeText(text);
+            btn.textContent='Copied'; setTimeout(()=>{ btn.textContent='Copy summary'; },1000);
+          }catch(_){ btn.textContent='Copy failed'; setTimeout(()=>{ btn.textContent='Copy summary'; },1200); }
+        });
+      })();
+  function renderAnswerSummary(summary){
+        try{
+          const ans = document.getElementById('chatAnswer');
+          const meta = document.getElementById('chatAnswerMeta');
+          const copyBtn=document.getElementById('copySummaryBtn');
+          if(!summary){ meta.textContent=''; ans.textContent='—'; hideCallout(); if(copyBtn) copyBtn.disabled=true; return; }
+          chatLastSummary = summary;
+          const sli = Number(summary.totals?.sli||0);
+          const sliPct = (sli*100).toFixed(2)+'%';
+          const sliColor = sli>=0.995? '#34d399' : (sli>=0.98? '#f59e0b' : '#fb7185');
+          const e = (summary.errors||[]);
+          const errHtml = e.length ? e.map(([k,v])=>`<span class=\"pill\" style=\"margin:2px; display:inline-block;\">${k}: ${v}</span>`).join(' ') : '<span class=\"muted\">none</span>';
+          const tPrompt = Number(summary.tokens?.prompt||0), tComp = Number(summary.tokens?.completion||0), tTot = Number(summary.tokens?.total||0);
+          const h = `
+            <div style="display:flex; flex-direction:column; gap:6px;">
+              <div class="muted" style="font-size:12px;">${summary.range?.from || '—'} → ${summary.range?.to || '—'} • ${summary.endpoint || 'all'}</div>
+              <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+                <span class="pill" style="background:${sliColor}; color:#0b0f14; font-weight:600;">SLI ${sliPct}</span>
+                <span class="pill">Total ${summary.totals?.total ?? 0}</span>
+                <span class="pill">OK ${summary.totals?.ok ?? 0}</span>
+              </div>
+              <div>
+                <div class="muted" style="margin-bottom:4px;">Latency (ms)</div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                  <span class="pill">p50 ${summary.latency?.p50 ?? 0}</span>
+                  <span class="pill">p95 ${summary.latency?.p95 ?? 0}</span>
+                  <span class="pill">p99 ${summary.latency?.p99 ?? 0}</span>
+                </div>
+              </div>
+              <div>
+                <div class="muted" style="margin-bottom:4px;">Top errors</div>
+                <div>${errHtml}</div>
+              </div>
+              <div>
+                <div class="muted" style="margin-bottom:4px;">Tokens</div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                  <span class="pill">prompt ${tPrompt}</span>
+                  <span class="pill">completion ${tComp}</span>
+                  <span class="pill">total ${tTot}</span>
+                </div>
+              </div>
+            </div>`;
+          ans.innerHTML = h;
+          showCallout(summary);
+          if(copyBtn) copyBtn.disabled=false;
+          meta.textContent = meta.textContent || '';
+        }catch(_){ /* ignore */ }
+      }
+      function drawChatDiagram(data){
+        const canvas = document.getElementById('chatDiagramCanvas');
+        const empty = document.getElementById('chatDiagramEmpty');
+        try{
+          chatDiagramLastData = data || { tables: [] };
+          const modeSel = document.getElementById('chatDiagramMode');
+          const mode = (modeSel?.value || 'auto').toLowerCase();
+          const tables = chatDiagramLastData.tables || [];
+          let src = null;
+          // Choose source table based on mode
+          if (mode === 'auto') {
+            const ctx = chatDiagramLastData.context || null;
+            if (ctx && ctx.table) {
+              src = tables.find(t=>t.name===ctx.table) || null;
+            }
+            if (!src) {
+              // Fallback priority: popular_models -> errors_by_status -> latency_by_endpoint -> lat_percentiles -> tokens_summary
+              src = tables.find(t=>t.name==='popular_models')
+                 || tables.find(t=>t.name==='errors_by_status')
+                 || tables.find(t=>t.name==='latency_by_endpoint')
+                 || tables.find(t=>t.name==='lat_percentiles')
+                 || tables.find(t=>t.name==='tokens_summary') || null;
+            }
+          } else if (mode === 'errors') {
+            src = tables.find(t=>t.name==='errors_by_status') || null;
+          } else if (mode === 'latency') {
+            // Prefer richer latency_by_endpoint if present; else fall back to percentiles
+            src = tables.find(t=>t.name==='latency_by_endpoint') || tables.find(t=>t.name==='lat_percentiles') || null;
+          } else if (mode === 'tokens') {
+            src = tables.find(t=>t.name==='tokens_summary') || null;
+          }
+
+          // Normalize rows -> labels/values
+          let labels = [], values = [];
+          if (src && Array.isArray(src.rows)) {
+            labels = src.rows.map(r => String(Array.isArray(r) ? r[0] : (r.key ?? '')));
+            values = src.rows.map(r => Number(Array.isArray(r) ? r[1] : (r.value ?? 0)));
+          }
+
+          if (src && labels.length && values.length) {
+            empty.style.display='none'; canvas.style.display='block'; drawChatBarChart(canvas, labels, values);
+          } else {
+            canvas.style.display='none'; empty.style.display='block';
+          }
+        }catch(_){ canvas.style.display='none'; empty.style.display='block'; }
+      }
+
+      // React to diagram mode changes using the last data
+      document.addEventListener('change', (e)=>{
+        if (e.target && e.target.id === 'chatDiagramMode') {
+          drawChatDiagram(chatDiagramLastData || { tables: [] });
+        }
+      });
+
       async function chatSend(){
         const input=document.getElementById('chatInput');
         const txt=input.value.trim(); if(!txt) return;
         const abs=absoluteRange(); const win=getWindow(); const now=Date.now();
         const from=abs?abs.from:(now-win*60000); const to=abs?abs.to:now;
         const ep=document.getElementById('endpointFilter').value;
-        const llm=!!document.getElementById('chatUseLlm').checked;
+    const llm=!!document.getElementById('chatUseLlm').checked;
+    const replaceWithLLM=!!document.getElementById('chatReplace').checked;
         const body={messages:[{role:'user',content:txt}],from, to, filters:{ endpoint: (ep&&ep!=='__all__')?ep:null }, llm};
-        const ansEl=document.getElementById('chatAnswer'); const citEl=document.getElementById('chatCitations');
-        ansEl.textContent=''; citEl.textContent='';
+  const ansEl=document.getElementById('chatAnswer');
+  const copyBtn=document.getElementById('copySummaryBtn');
+  const narr=document.getElementById('chatNarrative'); if(narr){ narr.style.display='none'; narr.textContent=''; }
+  const llmBadgeEl=document.getElementById('llmBadge'); if(llmBadgeEl){ llmBadgeEl.style.display='none'; }
+  ansEl.textContent='';
+  if(copyBtn) copyBtn.disabled=true;
+  hideCallout();
+  chatDiagramLastData = { tables: [] }; // clear diagram
+  drawChatDiagram(chatDiagramLastData);
         // Try streaming endpoint first
         try{
           const r = await fetch('/ai/chat/stream',{ method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify(body) });
           if (!r.ok || !r.body) throw new Error('no stream');
           const reader = r.body.getReader(); const decoder = new TextDecoder();
+          let ansBuffer = '';
           let leftover='';
-          while(true){
+      while(true){
             const {value, done} = await reader.read(); if(done) break;
             leftover += decoder.decode(value,{stream:true});
             let idx;
             while((idx=leftover.indexOf('\n'))>=0){
               const line = leftover.slice(0,idx); leftover = leftover.slice(idx+1);
               if(!line.trim()) continue;
-              try{const obj=JSON.parse(line); if(obj.delta!=null){ ansEl.textContent += String(obj.delta); }
-                if(obj.done){ const logs=(obj.citations?.logs||[]).map(id=>`log#${id}`).join(', '); citEl.textContent=`metrics: ${obj.citations?.metrics?.join?.(', ')||'—'} | logs: ${logs||'—'}`; }
+        try{const obj=JSON.parse(line); if(obj.delta!=null){ ansEl.textContent += String(obj.delta); }
+                if(obj.done){
+                  if(obj.summary){
+                    if(replaceWithLLM && obj.usedLLM && obj.narrative){
+                      // Put LLM narrative in Answer (rendered as Markdown); put structured summary as plain text in Narrative
+                      ansEl.innerHTML = mdToHtml(obj.narrative);
+                      // Side-effects normally done by renderAnswerSummary
+                      try{ chatLastSummary = obj.summary; showCallout(obj.summary); if(copyBtn) copyBtn.disabled=false; }catch(_){}
+                      const textSummary = buildSummaryText(obj.summary);
+                      const n=document.getElementById('chatNarrative'); if(n){ n.textContent = textSummary; n.style.display='block'; }
+                      const hint=document.getElementById('chatSwapHint'); if(hint) hint.style.display='block';
+                    } else {
+                      renderAnswerSummary(obj.summary);
+                      if(obj.narrative){ const n=document.getElementById('chatNarrative'); if(n){ n.innerHTML = obj.usedLLM ? mdToHtml(obj.narrative) : mdEscapeHtml(obj.narrative); n.style.display='block'; } }
+                      const hint=document.getElementById('chatSwapHint'); if(hint) hint.style.display='none';
+                    }
+                  }
+          if(obj.data){ chatDiagramLastData = obj.data; drawChatDiagram(chatDiagramLastData); }
+          if(!obj.summary && obj.narrative){ const n=document.getElementById('chatNarrative'); if(n){ n.innerHTML = obj.usedLLM ? mdToHtml(obj.narrative) : mdEscapeHtml(obj.narrative); n.style.display='block'; } }
+          if(obj.usedLLM){ const b=document.getElementById('llmBadge'); if(b){ b.style.display='inline-block'; } }
+          const metaEl=document.getElementById('chatAnswerMeta'); if(metaEl){
+            const tried = obj.llmTried ? 'tried' : 'not tried';
+            const used = obj.usedLLM ? 'used' : 'not used';
+            const model = obj.llmModel ? ` • ${obj.llmModel}` : '';
+            const status = (!obj.usedLLM && obj.llmStatus) ? ` • status ${obj.llmStatus}` : '';
+            metaEl.textContent = `LLM ${used} (${tried})${model}${status}`;
+          }
+                }
               }catch(_){ /* ignore */ }
             }
           }
@@ -330,16 +704,50 @@
         try{
           const r=await fetch('/ai/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
           if(!r.ok){ansEl.textContent='Chat error ('+r.status+')';return;}
-          const j=await r.json(); ansEl.textContent=j.answer||'(no answer)';
-          if(j.citations){const logs=(j.citations.logs||[]).map(id=>`log#${id}`).join(', ');citEl.textContent=`metrics: ${j.citations.metrics?.join?.(', ')||'—'} | logs: ${logs||'—'}`;}
+          const j=await r.json();
+          if (j.summary){
+            if(replaceWithLLM && j.usedLLM && j.narrative){
+              ansEl.innerHTML = mdToHtml(j.narrative);
+              try{ chatLastSummary = j.summary; showCallout(j.summary); if(copyBtn) copyBtn.disabled=false; }catch(_){}
+              const textSummary = buildSummaryText(j.summary);
+              const n=document.getElementById('chatNarrative'); if(n){ n.textContent = textSummary; n.style.display='block'; }
+              const hint=document.getElementById('chatSwapHint'); if(hint) hint.style.display='block';
+            } else {
+              renderAnswerSummary(j.summary);
+              if (j.narrative) { const n=document.getElementById('chatNarrative'); if(n){ n.innerHTML = j.usedLLM ? mdToHtml(j.narrative) : mdEscapeHtml(j.narrative); n.style.display='block'; } }
+              const hint=document.getElementById('chatSwapHint'); if(hint) hint.style.display='none';
+            }
+          } else {
+            if (j.usedLLM && j.answer) ansEl.innerHTML = mdToHtml(j.answer); else ansEl.textContent = j.answer || '(no answer)';
+            if (j.narrative) { const n=document.getElementById('chatNarrative'); if(n){ n.innerHTML = j.usedLLM ? mdToHtml(j.narrative) : mdEscapeHtml(j.narrative); n.style.display='block'; } }
+          }
+          if (j.usedLLM) { const b=document.getElementById('llmBadge'); if(b){ b.style.display='inline-block'; } }
+          chatDiagramLastData = j.data || { tables: [] };
+          drawChatDiagram(chatDiagramLastData);
+          const metaEl=document.getElementById('chatAnswerMeta'); if(metaEl){
+            const tried = j.llmTried ? 'tried' : 'not tried';
+            const used = j.usedLLM ? 'used' : 'not used';
+            const model = j.llmModel ? ` • ${j.llmModel}` : '';
+            const status = (!j.usedLLM && j.llmStatus) ? ` • status ${j.llmStatus}` : '';
+            metaEl.textContent = `LLM ${used} (${tried})${model}${status}`;
+          }
         }catch(e){ansEl.textContent='Chat failed';}
       }
       document.getElementById('chatSend').addEventListener('click',chatSend);
       document.getElementById('chatClear').addEventListener('click',()=>{document.getElementById('chatInput').value='';document.getElementById('chatAnswer').textContent='—';document.getElementById('chatCitations').textContent='—';});
       document.getElementById('chatInput').addEventListener('keydown',e=>{if(e.key==='Enter'&& (e.metaKey||e.ctrlKey)){e.preventDefault();chatSend();}});
-  function getKey(){try{return localStorage.getItem('obs_ingest_key')||'';}catch(_){return ''}}
+  function getKey(){
+    try{
+      const v=localStorage.getItem('obs_ingest_key');
+      return (v==null||v==='') ? 'secret' : v;
+    }catch(_){ return 'secret'; }
+  }
   function setKey(v){try{localStorage.setItem('obs_ingest_key',v||'');}catch(_){}}
-  (function initKey(){const el=document.getElementById('chatKey');el.value=getKey();el.addEventListener('change',()=>setKey(el.value));})();
+  (function initKey(){
+    const el=document.getElementById('chatKey');
+    el.value=getKey();
+    el.addEventListener('change',()=>setKey(el.value));
+  })();
   async function runOp(url, method='GET'){
     const msg=document.getElementById('chatOpsMsg');msg.textContent='…';
     try{
@@ -357,7 +765,7 @@
     try{
       const headers={};const k=getKey();if(k) headers['x-api-key']=k;
       const r=await fetch('/logs/sim/status',{headers,cache:'no-store'});
-      if(!r.ok){ if(r.status===404){ simStatusSupported=false; } return; }
+      if(!r.ok){ if(r.status===404){ simStatusSupported=false; } if(r.status===401){ const m=document.getElementById('chatOpsMsg'); m.textContent='Unauthorized: set ingest key'; setTimeout(()=>{m.textContent='';},1500);} return; }
       const j=await r.json();
       const btn=document.getElementById('chatToggleSim');
       if(!btn) return;
@@ -377,10 +785,19 @@
     }
   // Try to confirm via status if available
   if(simStatusSupported) setTimeout(refreshSimButton,300);
+  // Refresh logs when changed
+  setTimeout(refreshChatLogs,200);
   }
   document.getElementById('chatToggleSim').addEventListener('click',toggleSim);
   // Initialize button state on load
   refreshSimButton();
+  // Fetch non-sensitive config and show auto-start notice if applicable
+  (async function initConfig(){
+    try{
+      const r=await fetch('/config',{cache:'no-store'}); if(!r.ok) return; const j=await r.json();
+      if(j && j.logSimEnabled){ const n=document.getElementById('simAutoNotice'); if(n) n.style.display='inline-block'; }
+    }catch(_){ }
+  })();
   // Embeddings auto-index toggle
   let indexStatusSupported = true;
   async function refreshIndexButton(){
@@ -408,6 +825,37 @@
   }
   document.getElementById('chatToggleIndex').addEventListener('click',toggleIndex);
   refreshIndexButton();
+
+  // Load logs for Chat panel
+  async function refreshChatLogs(){
+    try{
+      const abs=absoluteRange(); const win=getWindow(); const now=Date.now();
+      const from=abs?abs.from:(now-win*60000); const to=abs?abs.to:now;
+      const ep=document.getElementById('endpointFilter').value;
+      const qp=new URLSearchParams(); qp.set('from',String(from)); qp.set('to',String(to)); qp.set('limit','100'); if(ep&&ep!=='__all__') qp.set('endpoint',ep);
+      let items=[];
+      const r=await fetch('/logs/list?'+qp.toString(),{cache:'no-store'});
+      if(r.ok){ const j=await r.json(); items=j.items||[]; }
+      else if(r.status===404){
+        // Fallback to /logs/search with no query to get recent logs
+        const s=await fetch('/logs/search?'+qp.toString()+'&k=100',{cache:'no-store'});
+        if(s.ok){ const sj=await s.json(); items=(sj.items||[]).map(x=>({ id:x.id, ts:x.ts, endpoint:x.endpoint, model:x.model, region:x.region, status:x.status, text:x.text })); }
+      } else { document.getElementById('chatLogsMeta').textContent='logs unavailable'; return; }
+      const tbody=document.querySelector('#chatLogsTable tbody');
+      tbody.innerHTML='';
+      items.forEach(it=>{
+        const tr=document.createElement('tr');
+        const iso=new Date(it.ts).toISOString();
+        tr.innerHTML=`<td style="padding:6px;border-bottom:1px solid #243244;">${iso}</td><td style="padding:6px;border-bottom:1px solid #243244;">${it.status??''}</td><td style="padding:6px;border-bottom:1px solid #243244;">${it.endpoint}</td><td style="padding:6px;border-bottom:1px solid #243244;">${it.model||''}</td><td style="padding:6px;border-bottom:1px solid #243244;">${it.region||''}</td><td style="padding:6px;border-bottom:1px solid #243244;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:600px;">${(it.text||'').replace(/[<>]/g,'')}</td>`;
+        tbody.appendChild(tr);
+      });
+      document.getElementById('chatLogsMeta').textContent=`${items.length} logs`;
+    }catch(e){ document.getElementById('chatLogsMeta').textContent='logs error'; }
+  }
+  // Periodically refresh logs when Chat tab is visible
+  let chatLogsTimer=null;
+  function startChatLogsTimer(){ if(chatLogsTimer) return; chatLogsTimer=setInterval(()=>{ const chatVisible=document.getElementById('chatContainer').style.display!=='none'; if(chatVisible) refreshChatLogs(); },5000); }
+  function stopChatLogsTimer(){ if(chatLogsTimer){ clearInterval(chatLogsTimer); chatLogsTimer=null; } }
       // Prefilled reasons & templates
       const REASON_PROMPTS={
         triage:'Triage the current window: summarize SLI, top failing statuses, affected endpoints, and immediate next steps to mitigate.',
@@ -442,8 +890,11 @@
         tpl.addEventListener('change',()=>{const idx=Number(tpl.value); if(Number.isInteger(idx)){ const t=TEMPLATES[idx]; if(t){ const input=document.getElementById('chatInput'); input.value=t.text; input.focus(); }}});
   // Persist LLM toggle
   const llmBox=document.getElementById('chatUseLlm');
+  const replBox=document.getElementById('chatReplace');
   try{ llmBox.checked = localStorage.getItem('obs_chat_llm')==='1'; }catch(_){ llmBox.checked=false; }
+  try{ replBox.checked = localStorage.getItem('obs_chat_replace')==='1'; }catch(_){ replBox.checked=false; }
   llmBox.addEventListener('change',()=>{ try{ localStorage.setItem('obs_chat_llm', llmBox.checked?'1':'0'); }catch(_){ } });
+  replBox.addEventListener('change',()=>{ try{ localStorage.setItem('obs_chat_replace', replBox.checked?'1':'0'); }catch(_){ } });
       })();
       // ===== UI Enhancements logic =====
       const PRICING={"gpt-4o-mini":{prompt:0.000150,completion:0.000600},"gpt-4.1-nano":{prompt:0.000030,completion:0.000060},"omni-moderation-latest":{prompt:0.000050,completion:0},"text-embedding-3-small":{prompt:0.000020,completion:0},"default":{prompt:0.000100,completion:0.000200}};
@@ -533,7 +984,19 @@
       es.onerror = ()=>{ live.textContent = ''; es.close(); };
     }
   } catch(_){}
-  syncPresetToRange();load(true);setInterval(()=>{load(false);updateEnhancements();},15000);updateEnhancements();
+  // Initialize custom range toggle (default off) and persist
+  try{
+    const chk=document.getElementById('useCustomRange');
+    if(chk){
+      const saved=localStorage.getItem('obs_use_custom_range');
+      chk.checked = saved==='1' ? true : false;
+      chk.addEventListener('change',()=>{
+        try{ localStorage.setItem('obs_use_custom_range', chk.checked?'1':'0'); }catch(_){}
+      });
+    }
+  }catch(_){ }
+  updateRangeInputsEnabled();
+  syncPresetToRange();load(true);setInterval(()=>{load(false);updateEnhancements();const chatVisible=document.getElementById('chatContainer').style.display!=='none'; if(chatVisible) refreshChatLogs();},15000);updateEnhancements();
     </script>
   </body>
 </html>
