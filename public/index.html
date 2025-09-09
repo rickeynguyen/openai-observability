@@ -14,6 +14,19 @@
       .muted{color:#9ca3af}.pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#1f2937}
       footer{margin-top:32px;font-size:12px;color:#6b7280}
       th[data-k]{cursor:pointer}
+  /* High-contrast nav buttons */
+  .nav-btn{cursor:pointer;display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;background:#1e293b;border:1px solid #334155;color:#e5e7eb;font-size:12px}
+  .nav-btn:hover{background:#2a3a51;border-color:#3b4a63}
+  .nav-btn.active{background:#3b82f6;border-color:#2563eb;color:#ffffff}
+  /* App buttons (high-contrast) */
+  .btn{cursor:pointer;display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:6px;background:#1e293b;border:1px solid #334155;color:#e5e7eb;font-size:12px}
+  .btn:hover{background:#2a3a51;border-color:#3b4a63}
+  .btn-primary{background:#2563eb;border-color:#1d4ed8;color:#ffffff}
+  .btn-primary:hover{background:#1e50c5;border-color:#1a47b1}
+  .btn-danger{background:#b91c1c;border-color:#991b1b;color:#ffffff}
+  .btn-danger:hover{background:#991b1b;border-color:#7f1d1d}
+  .btn-accent{background:#7c3aed;border-color:#6d28d9;color:#ffffff}
+  .btn-accent:hover{background:#6d28d9;border-color:#5b21b6}
     </style>
   </head>
   <body>
@@ -35,8 +48,145 @@
         <button id="exportJson" style="background:#1f2937;border:1px solid #243244;color:#e5e7eb;border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer">JSON</button>
       </div>
     </h1>
-  <div style="display:flex;gap:12px;margin-top:8px;align-items:center"><button id="viewSummary" class="pill" style="cursor:pointer;background:#2563eb;border:none">Summary</button><button id="viewTraces" class="pill" style="cursor:pointer">Traces</button><span id="lastRefresh" class="muted" style="margin-left:auto;font-size:11px"></span></div>
+  <div style="display:flex;gap:12px;margin-top:8px;align-items:center"><button id="viewSummary" class="nav-btn active">Summary</button><button id="viewTraces" class="nav-btn">Traces</button><button id="viewChat" class="nav-btn">Chat</button><span id="lastRefresh" class="muted" style="margin-left:auto;font-size:11px"></span></div>
     <div class="row" id="cards"></div>
+    <!-- Enhancements (visible with Summary view) -->
+    <section id="enhancements" style="display:block;margin-top:16px">
+      <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:12px; font-size:12px">
+        <label>Compare:
+          <select id="cmpSelect" style="background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:4px 6px;">
+            <option value="none">None</option>
+            <option value="model">Model</option>
+            <option value="region">Region</option>
+            <option value="baseline">Baseline vs Canary</option>
+          </select>
+        </label>
+        <span id="cmpValuesContainer" style="display:none; gap:8px; align-items:center;">
+          <label id="cmpValuesLabel">Values:</label>
+          <select id="cmpValues" multiple size="3" style="min-width:200px;background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:4px 6px;"></select>
+        </span>
+        <span id="baselineCanaryControls" style="display:none; gap:8px; align-items:center;">
+          <button id="saveBaselineBtn" type="button" class="pill" style="cursor:pointer">Save Baseline</button>
+          <button id="saveCanaryBtn" type="button" class="pill" style="cursor:pointer">Save Canary</button>
+        </span>
+        <span style="margin-left:24px; display:flex; gap:6px; align-items:center">
+          <label>SLO target:
+            <select id="sloTargetSelect" style="background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:4px 6px;">
+              <option value="0.99">99.0%</option>
+              <option value="0.995" selected>99.5%</option>
+              <option value="0.999">99.9%</option>
+              <option value="custom">Custom</option>
+            </select>
+          </label>
+          <input id="sloTargetCustom" type="number" step="0.0001" min="0.90" max="0.9999" placeholder="0.997" style="width:90px;background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:4px 6px; display:none;">
+        </span>
+        <label style="margin-left:auto;display:flex;gap:6px;align-items:center"><input id="toggleIncidents" type="checkbox" checked> Show incidents</label>
+      </div>
+
+      <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px; font-size:12px">
+        <div class="card" style="min-width:220px;">
+          <div style="font-weight:600;">Current SLI</div>
+          <div id="sliValue" style="font-size:20px; margin-top:6px;">—</div>
+          <div id="sliMeta" class="muted" style="margin-top:4px;">target: —</div>
+        </div>
+        <div class="card" style="min-width:260px;">
+          <div style="font-weight:600;">Error Budget Remaining</div>
+          <div id="ebrValue" style="font-size:20px; margin-top:6px;">—</div>
+          <div style="background:#0f172a; height:8px; border-radius:4px; margin-top:8px; position:relative;border:1px solid #243244;">
+            <div id="ebrBar" style="background:#34d399; height:8px; border-radius:4px; width:0%;"></div>
+          </div>
+          <div id="ebrMeta" class="muted" style="margin-top:4px;">spent: —</div>
+        </div>
+        <div class="card" style="flex:1; min-width:300px;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div style="font-weight:600;">Burn-rate Sparkline</div>
+            <div id="burnRateLegend" class="muted"></div>
+          </div>
+          <canvas id="burnRateSpark" height="60" style="width:100%;"></canvas>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <div style="font-weight:600;">Latency percentiles over time</div>
+          <div id="latencyLegend" class="muted">p50 / p95</div>
+        </div>
+        <div style="position:relative;">
+          <canvas id="latencyTimeseries" height="160" style="width:100%;"></canvas>
+          <canvas id="incidentOverlay" height="160" style="width:100%; position:absolute; left:0; top:0; pointer-events:none;"></canvas>
+        </div>
+      </div>
+
+      <div class="row" style="margin-bottom:12px;">
+        <div class="card" style="flex:1;">
+          <div style="font-weight:600; margin-bottom:6px;">Latency percentile heatmap</div>
+          <canvas id="latencyHeatmap" height="180" style="width:100%;"></canvas>
+        </div>
+        <div class="card" style="flex:1;">
+          <div style="font-weight:600; margin-bottom:6px;">Error heatmap (status/errType)</div>
+          <canvas id="errorHeatmap" height="180" style="width:100%;"></canvas>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <div style="font-weight:600;">Cost and tokens over time (approximate)</div>
+          <div id="costLegend" class="muted">Stacked tokens + $ line</div>
+        </div>
+        <canvas id="tokensArea" height="120" style="width:100%;"></canvas>
+        <canvas id="costLine" height="80" style="width:100%;"></canvas>
+        <div id="costCompareSummary" class="muted" style="margin:6px 0; display:none;"></div>
+        <div id="costCompareContainer" style="display:none; gap:12px; align-items:flex-start;">
+          <div style="flex:1; overflow:auto; max-height:240px;">
+            <div class="muted" style="margin:4px 0">Baseline</div>
+            <table id="costTableBaseline" style="width:100%; border-collapse:collapse; font-size:12px;">
+              <thead>
+                <tr>
+                  <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Endpoint</th>
+                  <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Model</th>
+                  <th style="text-align:right; border-bottom:1px solid #243244; padding:6px;">Prompt tokens</th>
+                  <th style="text-align:right; border-bottom:1px solid #243244; padding:6px;">Completion tokens</th>
+                  <th style="text-align:right; border-bottom:1px solid #243244; padding:6px;">Total tokens</th>
+                  <th style="text-align:right; border-bottom:1px solid #243244; padding:6px;">Approx $</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div style="flex:1; overflow:auto; max-height:240px;">
+            <div class="muted" style="margin:4px 0">Canary</div>
+            <table id="costTableCanary" style="width:100%; border-collapse:collapse; font-size:12px;">
+              <thead>
+                <tr>
+                  <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Endpoint</th>
+                  <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Model</th>
+                  <th style="text-align:right; border-bottom:1px solid #243244; padding:6px;">Prompt tokens</th>
+                  <th style="text-align:right; border-bottom:1px solid #243244; padding:6px;">Completion tokens</th>
+                  <th style="text-align:right; border-bottom:1px solid #243244; padding:6px;">Total tokens</th>
+                  <th style="text-align:right; border-bottom:1px solid #243244; padding:6px;">Approx $</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <div style="overflow:auto; max-height:240px; margin-top:8px;">
+      <table id="costBreakdownTable" style="width:100%; border-collapse:collapse; font-size:12px;">
+            <thead>
+              <tr>
+        <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Endpoint</th>
+        <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Model</th>
+        <th style="text-align:right; border-bottom:1px solid #243244; padding:6px;">Prompt tokens</th>
+        <th style="text-align:right; border-bottom:1px solid #243244; padding:6px;">Completion tokens</th>
+        <th style="text-align:right; border-bottom:1px solid #243244; padding:6px;">Total tokens</th>
+        <th style="text-align:right; border-bottom:1px solid #243244; padding:6px;">Approx $</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
     <div id="tracesContainer" style="display:none;margin-top:16px">
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px;font-size:12px">
         <label class="muted" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="errorsOnly"/> Errors only</label>
@@ -58,6 +208,64 @@
         </table>
       </div>
       <div id="traceMeta" class="muted" style="margin-top:6px;font-size:11px"></div>
+    </div>
+    <!-- Chat Tab -->
+    <div id="chatContainer" style="display:none;margin-top:16px">
+      <div class="card" style="margin-bottom:12px;">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;font-size:12px">
+          <button id="chatToggleSim" class="btn btn-primary" type="button">Start log simulator</button>
+          <button id="chatToggleIndex" class="btn btn-accent" type="button">Enable auto-index</button>
+          <span class="muted">Uses current endpoint and time range</span>
+          <span style="margin-left:auto; display:flex; gap:6px; align-items:center;">
+            <label class="muted">Ingest key:</label>
+            <input id="chatKey" type="password" placeholder="x-api-key" style="width:180px;background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:4px 6px;" />
+          </span>
+          <span id="chatOpsMsg" class="muted"></span>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;font-size:12px">
+          <label>Reason:
+            <select id="chatReason" style="background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:4px 6px;min-width:220px">
+              <option value="" selected>Select a reason…</option>
+              <option value="triage">Triage an incident</option>
+              <option value="correlate">Correlate an issue</option>
+              <option value="rca">Root cause analysis</option>
+              <option value="visualize">Create a visualization</option>
+              <option value="cost">Analyze a cost spike</option>
+              <option value="perf">Performance regression</option>
+              <option value="anomaly">Error burst / anomaly detection</option>
+              <option value="security">Audit / security check</option>
+              <option value="usage">Usage trends</option>
+              <option value="canary">Baseline vs Canary compare</option>
+            </select>
+          </label>
+          <label>Templates:
+            <select id="chatTemplates" style="background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:4px 6px;min-width:320px">
+              <option value="" selected>Pick a prompt template…</option>
+            </select>
+          </label>
+          <label style="display:flex; gap:6px; align-items:center;">
+            <input id="chatUseLlm" type="checkbox" /> Use LLM
+          </label>
+          <span class="muted">Tip: templates and reasons pre-fill the box; edit before sending.</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:flex-start;">
+          <textarea id="chatInput" rows="3" placeholder="Ask about reliability, errors, costs…" style="flex:1;background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:8px;font-size:13px"></textarea>
+          <div style="display:flex;flex-direction:column;gap:8px;align-items:stretch;">
+            <button id="chatSend" style="background:#2563eb;border:1px solid #1d4ed8;color:#e5e7eb;border-radius:6px;padding:8px 12px;font-size:13px;cursor:pointer;min-width:96px">Send</button>
+            <button id="chatClear" style="background:#1f2937;border:1px solid #243244;color:#e5e7eb;border-radius:6px;padding:6px 10px;font-size:12px;cursor:pointer;">Clear</button>
+          </div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="card" style="flex:2; min-height:160px;">
+          <div style="font-weight:600; margin-bottom:6px;">Answer</div>
+          <div id="chatAnswer" style="white-space:pre-wrap; font-size:13px; line-height:1.35">—</div>
+        </div>
+        <div class="card" style="flex:1; min-width:280px;">
+          <div style="font-weight:600; margin-bottom:6px;">Citations</div>
+          <div id="chatCitations" class="muted" style="font-size:12px">—</div>
+        </div>
+      </div>
     </div>
     <footer>Auto-refresh every 15s. Probes: multiple endpoints (round-robin by default).</footer>
     <script>
@@ -86,9 +294,246 @@
       function exportTrace(fmt){if(!traceState.currentPage.length)return;if(fmt==='json')return download('traces_page.json',JSON.stringify(traceState.currentPage,null,2));const header=['iso','status','ok','latencyMs','endpoint','model','region','errType','tokensTotal','tokensPrompt','tokensCompletion','respBytes'];const lines=[header.join(','),...traceState.currentPage.map(r=>header.map(h=>r[h]??'').join(','))];download('traces_page.csv',lines.join('\n'));}
       async function exportAllTraces(fmt){try{const win=getWindow();const eps=selectedEndpoints();const abs=absoluteRange();const base=abs?new URLSearchParams({from:String(abs.from),to:String(abs.to)}):new URLSearchParams({window:String(win)});if(eps.length) base.set('endpoint',eps.join(','));if(document.getElementById('errorsOnly').checked) base.set('errorsOnly','1');const slowVal=document.getElementById('slowMs').value;if(slowVal) base.set('slowMs',slowVal);let all=[];let cursor=null;let direction='prev';const limit=500;let safety=0;while(safety<50){const qp=new URLSearchParams(base.toString());qp.set('limit',String(limit));if(cursor){qp.set('cursor',String(cursor));qp.set('direction',direction);}const r=await fetch('/traces?'+qp.toString());const j=await r.json();all=all.concat(j.points);if(!j.cursor||!j.cursor.next||j.points.length<limit) break;cursor=j.cursor.next;direction='prev';safety++;}if(fmt==='json')return download('traces_all.json',JSON.stringify(all,null,2));const header=['iso','status','ok','latencyMs','endpoint','model','region','errType','tokensTotal','tokensPrompt','tokensCompletion','respBytes'];const lines=[header.join(','),...all.map(r=>header.map(h=>r[h]??'').join(','))];download('traces_all.csv',lines.join('\n'));}catch(e){console.error('export all traces failed',e);}}
   async function fetchLatencyHistogram(ep,id,abs,win){try{const params=abs?new URLSearchParams({from:String(abs.from),to:String(abs.to),endpoint:ep}):new URLSearchParams({window:String(win),endpoint:ep});const r=await fetch('/latency_histogram?'+params.toString(),{cache:'no-store'});const j=await r.json();const canvas=document.getElementById(id);if(!canvas)return;const ctx=canvas.getContext('2d');ctx.clearRect(0,0,canvas.width,canvas.height);if(!j.buckets||!j.buckets.length){ctx.fillStyle='#64748b';ctx.font='10px system-ui';ctx.fillText('no data',4,16);return;}const maxC=Math.max(...j.buckets.map(b=>b.count));const w=canvas.clientWidth||canvas.width;const h=canvas.height;const barW=w/j.buckets.length;j.buckets.forEach((b,i)=>{const bh=(b.count/maxC)*(h-4);ctx.fillStyle='#3b82f6';ctx.fillRect(i*barW,h-bh,barW-1,bh);});}catch(e){}}
-      function download(filename,text){const blob=new Blob([text],{type:'text/plain'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),4000);}function toggleButtons(isSummary){const s=document.getElementById('viewSummary');const t=document.getElementById('viewTraces');if(isSummary){s.style.background='#2563eb';t.style.background='#1f2937';}else{t.style.background='#2563eb';s.style.background='#1f2937';}}
-      document.getElementById('windowSelect').addEventListener('change',()=>{syncPresetToRange();load(true);});document.getElementById('applyRange').addEventListener('click',()=>load(true));document.getElementById('endpointFilter').addEventListener('change',()=>load(true));document.getElementById('exportCsv').addEventListener('click',exportCsv);document.getElementById('exportJson').addEventListener('click',exportJson);document.getElementById('viewSummary').addEventListener('click',()=>{document.getElementById('tracesContainer').style.display='none';document.getElementById('cards').style.display='flex';toggleButtons(true);});document.getElementById('viewTraces').addEventListener('click',()=>{document.getElementById('cards').style.display='none';document.getElementById('tracesContainer').style.display='block';toggleButtons(false);});document.getElementById('applyTraceFilters').addEventListener('click',()=>load(true));document.getElementById('prevPage').addEventListener('click',()=>{if(!traceState.serverCursors)return;traceState.cursor=traceState.serverCursors.prev;traceState.direction='next';load(false);});document.getElementById('nextPage').addEventListener('click',()=>{if(!traceState.serverCursors)return;traceState.cursor=traceState.serverCursors.next;traceState.direction='prev';load(false);});document.getElementById('exportTraceCsv').addEventListener('click',()=>exportTrace('csv'));document.getElementById('exportTraceJson').addEventListener('click',()=>exportTrace('json'));document.getElementById('exportTraceAllCsv').addEventListener('click',()=>exportAllTraces('csv'));document.getElementById('exportTraceAllJson').addEventListener('click',()=>exportAllTraces('json'));document.getElementById('traceHeaderRow').addEventListener('click',ev=>{const th=ev.target.closest('th');if(!th||!th.dataset.k)return;const k=th.dataset.k;if(traceState.sort.key===k){traceState.sort.dir=traceState.sort.dir==='asc'?'desc':'asc';}else{traceState.sort.key=k;traceState.sort.dir='asc';}load(false);});
-      syncPresetToRange();load(true);setInterval(()=>load(false),15000);
+    function download(filename,text){const blob=new Blob([text],{type:'text/plain'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),4000);}function setActiveTab(id){['viewSummary','viewTraces','viewChat'].forEach(x=>{const el=document.getElementById(x);if(el){if(x===id)el.classList.add('active');else el.classList.remove('active');}})}
+  document.getElementById('windowSelect').addEventListener('change',()=>{syncPresetToRange();load(true);updateEnhancements();});document.getElementById('applyRange').addEventListener('click',()=>{load(true);updateEnhancements();});document.getElementById('endpointFilter').addEventListener('change',()=>{load(true);updateEnhancements();});document.getElementById('exportCsv').addEventListener('click',exportCsv);document.getElementById('exportJson').addEventListener('click',exportJson);document.getElementById('viewSummary').addEventListener('click',()=>{document.getElementById('tracesContainer').style.display='none';document.getElementById('chatContainer').style.display='none';document.getElementById('cards').style.display='flex';document.getElementById('enhancements').style.display='block';setActiveTab('viewSummary');});document.getElementById('viewTraces').addEventListener('click',()=>{document.getElementById('cards').style.display='none';document.getElementById('enhancements').style.display='none';document.getElementById('chatContainer').style.display='none';document.getElementById('tracesContainer').style.display='block';setActiveTab('viewTraces');});document.getElementById('viewChat').addEventListener('click',()=>{document.getElementById('cards').style.display='none';document.getElementById('enhancements').style.display='none';document.getElementById('tracesContainer').style.display='none';document.getElementById('chatContainer').style.display='block';setActiveTab('viewChat');});document.getElementById('applyTraceFilters').addEventListener('click',()=>load(true));document.getElementById('prevPage').addEventListener('click',()=>{if(!traceState.serverCursors)return;traceState.cursor=traceState.serverCursors.prev;traceState.direction='next';load(false);});document.getElementById('nextPage').addEventListener('click',()=>{if(!traceState.serverCursors)return;traceState.cursor=traceState.serverCursors.next;traceState.direction='prev';load(false);});document.getElementById('exportTraceCsv').addEventListener('click',()=>exportTrace('csv'));document.getElementById('exportTraceJson').addEventListener('click',()=>exportTrace('json'));document.getElementById('exportTraceAllCsv').addEventListener('click',()=>exportAllTraces('csv'));document.getElementById('exportTraceAllJson').addEventListener('click',()=>exportAllTraces('json'));document.getElementById('traceHeaderRow').addEventListener('click',ev=>{const th=ev.target.closest('th');if(!th||!th.dataset.k)return;const k=th.dataset.k;if(traceState.sort.key===k){traceState.sort.dir=traceState.sort.dir==='asc'?'desc':'asc';}else{traceState.sort.key=k;traceState.sort.dir='asc';}load(false);});
+      // Chat actions
+      async function chatSend(){
+        const input=document.getElementById('chatInput');
+        const txt=input.value.trim(); if(!txt) return;
+        const abs=absoluteRange(); const win=getWindow(); const now=Date.now();
+        const from=abs?abs.from:(now-win*60000); const to=abs?abs.to:now;
+        const ep=document.getElementById('endpointFilter').value;
+        const llm=!!document.getElementById('chatUseLlm').checked;
+        const body={messages:[{role:'user',content:txt}],from, to, filters:{ endpoint: (ep&&ep!=='__all__')?ep:null }, llm};
+        const ansEl=document.getElementById('chatAnswer'); const citEl=document.getElementById('chatCitations');
+        ansEl.textContent=''; citEl.textContent='';
+        // Try streaming endpoint first
+        try{
+          const r = await fetch('/ai/chat/stream',{ method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify(body) });
+          if (!r.ok || !r.body) throw new Error('no stream');
+          const reader = r.body.getReader(); const decoder = new TextDecoder();
+          let leftover='';
+          while(true){
+            const {value, done} = await reader.read(); if(done) break;
+            leftover += decoder.decode(value,{stream:true});
+            let idx;
+            while((idx=leftover.indexOf('\n'))>=0){
+              const line = leftover.slice(0,idx); leftover = leftover.slice(idx+1);
+              if(!line.trim()) continue;
+              try{const obj=JSON.parse(line); if(obj.delta!=null){ ansEl.textContent += String(obj.delta); }
+                if(obj.done){ const logs=(obj.citations?.logs||[]).map(id=>`log#${id}`).join(', '); citEl.textContent=`metrics: ${obj.citations?.metrics?.join?.(', ')||'—'} | logs: ${logs||'—'}`; }
+              }catch(_){ /* ignore */ }
+            }
+          }
+          return;
+        }catch(_){ /* fallback to non-stream */ }
+        try{
+          const r=await fetch('/ai/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+          if(!r.ok){ansEl.textContent='Chat error ('+r.status+')';return;}
+          const j=await r.json(); ansEl.textContent=j.answer||'(no answer)';
+          if(j.citations){const logs=(j.citations.logs||[]).map(id=>`log#${id}`).join(', ');citEl.textContent=`metrics: ${j.citations.metrics?.join?.(', ')||'—'} | logs: ${logs||'—'}`;}
+        }catch(e){ansEl.textContent='Chat failed';}
+      }
+      document.getElementById('chatSend').addEventListener('click',chatSend);
+      document.getElementById('chatClear').addEventListener('click',()=>{document.getElementById('chatInput').value='';document.getElementById('chatAnswer').textContent='—';document.getElementById('chatCitations').textContent='—';});
+      document.getElementById('chatInput').addEventListener('keydown',e=>{if(e.key==='Enter'&& (e.metaKey||e.ctrlKey)){e.preventDefault();chatSend();}});
+  function getKey(){try{return localStorage.getItem('obs_ingest_key')||'';}catch(_){return ''}}
+  function setKey(v){try{localStorage.setItem('obs_ingest_key',v||'');}catch(_){}}
+  (function initKey(){const el=document.getElementById('chatKey');el.value=getKey();el.addEventListener('change',()=>setKey(el.value));})();
+  async function runOp(url, method='GET'){
+    const msg=document.getElementById('chatOpsMsg');msg.textContent='…';
+    try{
+      const headers={};const k=getKey();if(k) headers['x-api-key']=k;
+      const r=await fetch(url,{method,headers});
+      let json=null; try{ json = await r.clone().json(); }catch(_){ }
+      msg.textContent=r.ok?'ok':'err '+r.status;
+      setTimeout(()=>{msg.textContent='';},1200);
+      return { ok:r.ok, status:r.status, json };
+    }catch(_){ msg.textContent='err'; setTimeout(()=>{msg.textContent='';},1200); return { ok:false, status:0, json:null }; }
+  }
+  let simStatusSupported = true;
+  async function refreshSimButton(){
+    if(!simStatusSupported) return;
+    try{
+      const headers={};const k=getKey();if(k) headers['x-api-key']=k;
+      const r=await fetch('/logs/sim/status',{headers,cache:'no-store'});
+      if(!r.ok){ if(r.status===404){ simStatusSupported=false; } return; }
+      const j=await r.json();
+      const btn=document.getElementById('chatToggleSim');
+      if(!btn) return;
+      if(j.running){ btn.textContent='Stop simulator'; btn.classList.remove('btn-primary'); btn.classList.add('btn-danger'); btn.dataset.state='running'; }
+      else { btn.textContent='Start log simulator'; btn.classList.remove('btn-danger'); btn.classList.add('btn-primary'); btn.dataset.state='stopped'; }
+    }catch(_){ /* ignore */ }
+  }
+  async function toggleSim(){
+    const btn=document.getElementById('chatToggleSim');
+    const running=btn.dataset.state==='running';
+    const url=running?'/logs/sim/stop':'/logs/sim/start';
+    const res = await runOp(url);
+    if(res.ok){
+      // Update UI immediately based on action
+      if(running){ btn.textContent='Start log simulator'; btn.classList.remove('btn-danger'); btn.classList.add('btn-primary'); btn.dataset.state='stopped'; }
+      else { btn.textContent='Stop simulator'; btn.classList.remove('btn-primary'); btn.classList.add('btn-danger'); btn.dataset.state='running'; }
+    }
+  // Try to confirm via status if available
+  if(simStatusSupported) setTimeout(refreshSimButton,300);
+  }
+  document.getElementById('chatToggleSim').addEventListener('click',toggleSim);
+  // Initialize button state on load
+  refreshSimButton();
+  // Embeddings auto-index toggle
+  let indexStatusSupported = true;
+  async function refreshIndexButton(){
+    if(!indexStatusSupported) return;
+    try{
+      const headers={};const k=getKey();if(k) headers['x-api-key']=k;
+      const r=await fetch('/ai/index/auto/status',{headers,cache:'no-store'});
+      if(!r.ok){ if(r.status===404){ indexStatusSupported=false; } return; }
+      const j=await r.json();
+      const btn=document.getElementById('chatToggleIndex'); if(!btn) return;
+      if(j.running){ btn.textContent='Disable auto-index'; btn.classList.remove('btn-accent'); btn.classList.add('btn-danger'); btn.dataset.state='running'; }
+      else { btn.textContent='Enable auto-index'; btn.classList.remove('btn-danger'); btn.classList.add('btn-accent'); btn.dataset.state='stopped'; }
+    }catch(_){ /* ignore */ }
+  }
+  async function toggleIndex(){
+    const btn=document.getElementById('chatToggleIndex'); if(!btn) return;
+    const running=btn.dataset.state==='running';
+    const url=running?'/ai/index/auto/stop':'/ai/index/auto/start';
+    const res=await runOp(url);
+    if(res.ok){
+      if(running){ btn.textContent='Enable auto-index'; btn.classList.remove('btn-danger'); btn.classList.add('btn-accent'); btn.dataset.state='stopped'; }
+      else { btn.textContent='Disable auto-index'; btn.classList.remove('btn-accent'); btn.classList.add('btn-danger'); btn.dataset.state='running'; }
+    }
+    if(indexStatusSupported) setTimeout(refreshIndexButton,300);
+  }
+  document.getElementById('chatToggleIndex').addEventListener('click',toggleIndex);
+  refreshIndexButton();
+      // Prefilled reasons & templates
+      const REASON_PROMPTS={
+        triage:'Triage the current window: summarize SLI, top failing statuses, affected endpoints, and immediate next steps to mitigate.',
+        correlate:'Correlate error and latency spikes with model/region/endpoint; identify the strongest contributors and co-occurring signals.',
+        rca:'Perform a brief root cause analysis: what changed, what dimensions correlate most with failures, and what likely root causes emerge?',
+        visualize:'Propose a quick visualization (axes, buckets) to reveal the issue: e.g., errors by status over 5-min buckets or latency p95 by region.',
+        cost:'Analyze any cost spikes: which endpoints/models are driving tokens and $; highlight outliers vs typical baseline.',
+        perf:'Identify performance regressions: which cohort shows higher latency; quantify p50/p95 delta and likely cause.',
+        anomaly:'Detect anomalies in the selected window: error bursts or unusual patterns; cite the top suspicious logs.',
+        security:'Audit/security: list unusual access or error patterns (e.g., many 401/403), and any sensitive error messages to review.',
+        usage:'Summarize usage trends: volume, success rate, and token usage by endpoint/model; highlight changes from prior window.',
+        canary:'Compare baseline vs canary cohorts for errors, latency and cost; provide deltas and a simple recommendation.'
+      };
+      const TEMPLATES=[
+        { label:'Summary: reliability snapshot', text:'Summarize reliability over the current range, including SLI, p50/p95/p99, top error statuses, affected endpoints, and a brief recommendation.' },
+        { label:'Why did errors spike?', text:'Explain any error spikes in the current window. Show likely causes, top error types/status codes with counts, and which endpoints/models are impacted.' },
+        { label:'Correlation by model/region', text:'Correlate latency and failures with model and region. Which combinations contribute most to p95 and error rate?' },
+        { label:'Top slow requests', text:'List the top 10 slowest successful requests with context (status, endpoint, model, region), and any common patterns.' },
+        { label:'Rate limits (429) analysis', text:'Find and summarize logs related to 429 rate limits in this window. Include messages and any request patterns contributing to throttling.' },
+        { label:'Error distribution over time', text:'Describe an error distribution by status code over time (e.g., 5-min buckets). Provide key inflection points and possible triggers.' },
+        { label:'Cost & tokens outliers', text:'Summarize cost and tokens by endpoint/model; call out any outliers or abrupt changes compared to typical behavior.' },
+        { label:'Baseline vs Canary', text:'Compare baseline vs canary cohorts for latency (p50/p95) and errors. Provide deltas, and whether canary is acceptable.' },
+        { label:'Anomalous patterns', text:'Identify anomalous request patterns or unusual sequences in the current window; include the most relevant logs as evidence.' },
+        { label:'Draft incident report', text:'Draft a concise incident summary for this window: impact, timeline, suspected cause, and action items.' }
+      ];
+      (function initChatPrompts(){
+        const reason=document.getElementById('chatReason');
+        const tpl=document.getElementById('chatTemplates');
+        // Fill templates
+        TEMPLATES.forEach((t,i)=>{const o=document.createElement('option');o.value=String(i);o.textContent=t.label;tpl.appendChild(o);});
+        reason.addEventListener('change',()=>{const key=reason.value; if(!key) return; const txt=REASON_PROMPTS[key]; if(txt){ const input=document.getElementById('chatInput'); input.value=txt; input.focus(); }});
+        tpl.addEventListener('change',()=>{const idx=Number(tpl.value); if(Number.isInteger(idx)){ const t=TEMPLATES[idx]; if(t){ const input=document.getElementById('chatInput'); input.value=t.text; input.focus(); }}});
+  // Persist LLM toggle
+  const llmBox=document.getElementById('chatUseLlm');
+  try{ llmBox.checked = localStorage.getItem('obs_chat_llm')==='1'; }catch(_){ llmBox.checked=false; }
+  llmBox.addEventListener('change',()=>{ try{ localStorage.setItem('obs_chat_llm', llmBox.checked?'1':'0'); }catch(_){ } });
+      })();
+      // ===== UI Enhancements logic =====
+      const PRICING={"gpt-4o-mini":{prompt:0.000150,completion:0.000600},"gpt-4.1-nano":{prompt:0.000030,completion:0.000060},"omni-moderation-latest":{prompt:0.000050,completion:0},"text-embedding-3-small":{prompt:0.000020,completion:0},"default":{prompt:0.000100,completion:0.000200}};
+  const cmpSelect=document.getElementById('cmpSelect');const cmpValues=document.getElementById('cmpValues');const cmpValuesContainer=document.getElementById('cmpValuesContainer');const baselineCanaryControls=document.getElementById('baselineCanaryControls');const sloTargetSelect=document.getElementById('sloTargetSelect');const sloTargetCustom=document.getElementById('sloTargetCustom');const toggleIncidents=document.getElementById('toggleIncidents');
+  const sliValue=document.getElementById('sliValue');const sliMeta=document.getElementById('sliMeta');const ebrValue=document.getElementById('ebrValue');const ebrMeta=document.getElementById('ebrMeta');const ebrBar=document.getElementById('ebrBar');const burnRateSpark=document.getElementById('burnRateSpark');const burnRateLegend=document.getElementById('burnRateLegend');const latencyTimeseries=document.getElementById('latencyTimeseries');const incidentOverlay=document.getElementById('incidentOverlay');const latencyHeatmap=document.getElementById('latencyHeatmap');const errorHeatmap=document.getElementById('errorHeatmap');const tokensArea=document.getElementById('tokensArea');const costLine=document.getElementById('costLine');
+  const latencyLegend=document.getElementById('latencyLegend');
+  const costLegend=document.getElementById('costLegend');
+  const costCompareSummary=document.getElementById('costCompareSummary');
+  const costCompareContainer=document.getElementById('costCompareContainer');
+      function statusOk(s){return s>=200&&s<300;}function fmtPct(x){return (x*100).toFixed(2)+'%';}function clamp01(x){return Math.max(0,Math.min(1,x));}
+      async function fetchIncidents(from,to){if(!toggleIncidents||!toggleIncidents.checked) return [];try{const p=new URLSearchParams();if(from)p.set('from',String(from));if(to)p.set('to',String(to));const r=await fetch('/incidents?'+p.toString(),{cache:'no-store'});if(r.ok)return await r.json();}catch(_){}try{const r=await fetch('/incidents.json',{cache:'no-store'});if(r.ok){const all=await r.json();if(!from||!to)return all;return all.filter(x=>x.end>=from&&x.start<=to);}}catch(_){}return []}
+      async function fetchAllTracesForRange(endpoint,from,to,limit=500,maxPages=30){let cursor=null;let all=[];let pages=0;while(pages<maxPages){const qp=new URLSearchParams();if(endpoint&&endpoint!=='__all__') qp.set('endpoint',endpoint);if(from) qp.set('from',String(from));if(to) qp.set('to',String(to));qp.set('limit',String(limit));if(cursor){qp.set('cursor',String(cursor));qp.set('direction','prev');}const r=await fetch('/traces?'+qp.toString(),{cache:'no-store'});if(!r.ok) break;const j=await r.json();const pts=j.points||[];all=all.concat(pts);pages++;if(!j.cursor||!j.cursor.next||pts.length<limit) break;cursor=j.cursor.next; if(from && pts.some(p=>p.ts<=from)) break;}
+        return all.filter(p=>(!from||p.ts>=from)&&(!to||p.ts<=to));}
+      function bucketize(traces,from,to,buckets=60,groupBy){if(!from||!to||to<=from) return {step:0,series:[]};const step=Math.max(1,Math.floor((to-from)/buckets));const keyFor=(t)=>{if(!groupBy||!groupBy.length) return 'all';return groupBy.map(k=>t[k]||'').join('|');};const m=new Map();for(const t of traces){const idx=Math.min(buckets-1,Math.max(0,Math.floor((t.ts-from)/step)));const key=keyFor(t);if(!m.has(key)) m.set(key,Array(buckets).fill(null).map((_,i)=>({t:from+i*step,latencies:[],statusCounts:{},ok:0,total:0,tokensPrompt:0,tokensCompletion:0,tokensTotal:0})));const b=m.get(key)[idx];if(typeof t.latencyMs==='number') b.latencies.push(t.latencyMs);const sKey=String(t.status??(t.ok?200:0));b.statusCounts[sKey]=(b.statusCounts[sKey]||0)+1;b.total+=1;if(statusOk(t.status??(t.ok?200:0))) b.ok+=1;b.tokensPrompt+=(t.tokensPrompt||0);b.tokensCompletion+=(t.tokensCompletion||0);b.tokensTotal+=(t.tokensTotal||0);}function perc(a,p){if(!a.length)return null;const s=a.slice().sort((x,y)=>x-y);const idx=Math.min(s.length-1,Math.max(0,Math.floor((p/100)*(s.length-1))));return s[idx];}const out=[];for(const [k,arr] of m.entries()){out.push({key:k,points:arr.map(b=>({t:b.t,count:b.total,ok:b.ok,p50:perc(b.latencies,50),p75:perc(b.latencies,75),p90:perc(b.latencies,90),p95:perc(b.latencies,95),p99:perc(b.latencies,99),statusCounts:b.statusCounts,tokensPrompt:b.tokensPrompt,tokensCompletion:b.tokensCompletion,tokensTotal:b.tokensTotal}))});}return {step,series:out};}
+      function computeSLI(series){let ok=0,total=0;for(const s of series){for(const p of s.points){ok+=p.ok;total+=p.count;}}return {ok,total,sli:total?ok/total:1};}
+  function getCurrentCohort(){const ep=document.getElementById('endpointFilter').value;const abs=absoluteRange();const win=getWindow();const now=Date.now();return abs?{endpoint:ep,from:abs.from,to:abs.to}:{endpoint:ep,from:now-win*60000,to:now};}
+  function saveCohort(name){try{const cfg=getCurrentCohort();localStorage.setItem(name,JSON.stringify(cfg));}catch(e){console.error('save cohort failed',e);}}
+  function loadCohort(name){try{const v=localStorage.getItem(name);return v?JSON.parse(v):null;}catch(_){return null;}}
+  function drawBurn(ctx,points,target){const w=ctx.canvas.clientWidth||ctx.canvas.width,h=ctx.canvas.height;ctx.canvas.width=w;ctx.clearRect(0,0,w,h);if(!points.length){chartState.burn=null;return;}const errs=points.map(p=>p.total?1-(p.ok/p.total):0);const denom=Math.max(1e-6,1-target);const burns=errs.map(e=>e/denom);const maxB=Math.max(1,...burns);ctx.strokeStyle='#666';ctx.beginPath();ctx.moveTo(0,h-0.5);ctx.lineTo(w,h-0.5);ctx.stroke();ctx.setLineDash([4,3]);ctx.strokeStyle='#888';const y1=h-(1/maxB)*h;ctx.beginPath();ctx.moveTo(0,y1);ctx.lineTo(w,y1);ctx.stroke();ctx.setLineDash([]);ctx.strokeStyle='#3b82f6';ctx.beginPath();burns.forEach((b,i)=>{const x=(i/(burns.length-1))*(w-1),y=h-(b/maxB)*(h-1);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();document.getElementById('burnRateLegend').textContent=`max ${Math.max(...burns).toFixed(2)} • target ${ (target*100).toFixed(2)}%`;chartState.burn={points,target,burns,maxB};}
+  function labelChart(ctx,text){ctx.save();ctx.fillStyle='#9ca3af';ctx.font='10px system-ui';ctx.fillText(text,4,11);ctx.restore();}
+  function drawBurnLabeled(ctx,points,target){drawBurn(ctx,points,target);labelChart(ctx,'burn-rate');}
+      function drawLatency(ctx,series,overlays){const w=ctx.canvas.clientWidth||ctx.canvas.width,h=ctx.canvas.height;ctx.canvas.width=w;ctx.clearRect(0,0,w,h);if(!series.length)return;const pts=series.flatMap(s=>s.points);const tMin=Math.min(...pts.map(p=>p.t));const tMax=Math.max(...pts.map(p=>p.t));const yMax=Math.max(1,...pts.flatMap(p=>[p.p50||0,p.p95||0]));const colors=['#3b82f6','#ef8f00','#22c55e','#a855f7','#06b6d4','#ef4444'];series.forEach((s,si)=>{[['p50',0],['p95',1]].forEach(([k,off])=>{const c=colors[(si*2+off)%colors.length];ctx.strokeStyle=c;ctx.beginPath();s.points.forEach((p,i)=>{const x=(p.t-tMin)/(tMax-tMin||1)*(w-1);const y=h-((p[k]||0)/yMax)*(h-1);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();});});labelChart(ctx,'ms');const oCanvas=document.getElementById('incidentOverlay');const octx=oCanvas.getContext('2d');oCanvas.width=w;oCanvas.height=h;octx.clearRect(0,0,w,h);if(toggleIncidents&&toggleIncidents.checked&&overlays&&overlays.length){octx.fillStyle='rgba(239,68,68,0.12)';overlays.forEach(inc=>{const x1=(Math.max(inc.start,tMin)-tMin)/(tMax-tMin||1)*(w-1);const x2=(Math.min(inc.end,tMax)-tMin)/(tMax-tMin||1)*(w-1);if(x2>=0&&x1<=w)octx.fillRect(Math.max(0,x1),0,Math.max(1,x2-x1),h);});}
+        // store for hover
+        chartState.latency={series,overlays,domain:{tMin,tMax},yMax};}
+      function drawHeatLatency(ctx,series){const w=ctx.canvas.clientWidth||ctx.canvas.width,h=ctx.canvas.height;ctx.canvas.width=w;ctx.clearRect(0,0,w,h);if(!series.length)return;const pts=series[0].points;const rows=['p50','p75','p90','p95','p99'];const cols=pts.length;const maxV=Math.max(1,...pts.flatMap(p=>rows.map(r=>p[r]||0)));const cw=Math.max(1,Math.floor(w/cols)),ch=Math.max(1,Math.floor(h/rows.length));for(let c=0;c<cols;c++){for(let r=0;r<rows.length;r++){const v=pts[c][rows[r]]||0;const t=v/maxV;const col=`hsl(${(1-t)*120},70%,45%)`;ctx.fillStyle=col;ctx.fillRect(c*cw,r*ch,cw,ch);}}}
+      function drawHeatErrors(ctx,series){const w=ctx.canvas.clientWidth||ctx.canvas.width,h=ctx.canvas.height;ctx.canvas.width=w;ctx.clearRect(0,0,w,h);if(!series.length)return;const pts=series[0].points;const statuses=Array.from(new Set(pts.flatMap(p=>Object.keys(p.statusCounts||{})))).sort();if(!statuses.length)return;const cols=pts.length;const cw=Math.max(1,Math.floor(w/cols)),ch=Math.max(1,Math.floor(h/statuses.length));const maxC=Math.max(1,...pts.flatMap(p=>statuses.map(s=>p.statusCounts[s]||0)));for(let c=0;c<cols;c++){for(let r=0;r<statuses.length;r++){const s=statuses[r];const v=pts[c].statusCounts[s]||0;const t=v/maxC;const col=v===0?'rgba(255,255,255,0.03)':`hsl(${(1-t)*120},70%,40%)`;ctx.fillStyle=col;ctx.fillRect(c*cw,r*ch,cw,ch);}}}
+    function usd(model,prompt,completion){const p=PRICING[model]||PRICING.default;return (prompt/1000)*p.prompt+(completion/1000)*p.completion;}
+  function fmtInt(n){return (n||0).toLocaleString();}
+  function fmtUsd(n){return '$'+(n||0).toFixed(4);}
+  function computeCostAgg(traces){const agg=new Map();let totalPrompt=0,totalComp=0,totalUsd=0;for(const t of traces){const ep=t.endpoint||'unknown';const model=t.model||'default';const k=ep+'||'+model;const prompt=Number(t.tokensPrompt||0);const comp=Number(t.tokensCompletion||0);const tot=Number(t.tokensTotal||prompt+comp);if(!agg.has(k)) agg.set(k,{endpoint:ep,model,prompt:0,completion:0,total:0,usd:0});const row=agg.get(k);row.prompt+=prompt;row.completion+=comp;row.total+=tot;row.usd+=usd(model,prompt,comp);totalPrompt+=prompt;totalComp+=comp;totalUsd+=usd(model,prompt,comp);}const rows=[...agg.values()].sort((a,b)=>b.usd-a.usd);return {rows,totalPrompt,totalComp,totalUsd};}
+  function drawTokens(ctx,series){const w=ctx.canvas.clientWidth||ctx.canvas.width,h=ctx.canvas.height;ctx.canvas.width=w;ctx.clearRect(0,0,w,h);if(!series.length){chartState.tokens=null;return;}const pts=series[0].points;const maxT=Math.max(1,...pts.map(p=>(p.tokensPrompt+p.tokensCompletion)));const prompt=(i)=>pts[i].tokensPrompt,comp=(i)=>pts[i].tokensCompletion;function area(vals,color,offset){ctx.fillStyle=color;ctx.beginPath();for(let i=0;i<pts.length;i++){const x=(i/(pts.length-1))*(w-1);const v=vals(i),o=offset?offset(i):0;const y=h-((v+o)/maxT)*(h-1);if(i===0)ctx.moveTo(x,h-(o/maxT)*(h-1));ctx.lineTo(x,y);}for(let i=pts.length-1;i>=0;i--){const x=(i/(pts.length-1))*(w-1);const o=offset?offset(i):0;const y=h-(o/maxT)*(h-1);ctx.lineTo(x,y);}ctx.closePath();ctx.fill();}
+  area(prompt,'rgba(59,130,246,0.35)');area(comp,'rgba(34,197,94,0.35)',prompt);labelChart(ctx,'tokens');chartState.tokens={pts,maxT};}
+      function drawCost(ctx,series,modelLabel){const w=ctx.canvas.clientWidth||ctx.canvas.width,h=ctx.canvas.height;ctx.canvas.width=w;ctx.clearRect(0,0,w,h);if(!series.length){chartState.cost=null;return;}const pts=series[0].points;const stepArr=pts.map(p=>usd(modelLabel,p.tokensPrompt,p.tokensCompletion));let cum=0;const cumArr=stepArr.map(v=>{cum+=v;return cum;});const maxU=Math.max(1e-6,cumArr[cumArr.length-1]);ctx.strokeStyle='#e91e63';ctx.beginPath();for(let i=0;i<pts.length;i++){const x=(i/(pts.length-1))*(w-1);const y=h-(cumArr[i]/maxU)*(h-1);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);}ctx.stroke();labelChart(ctx,'$ (cum)');chartState.cost={pts,model:modelLabel,stepArr,cumArr,maxU};}
+      // ===== Hover interaction helpers =====
+      const chartState={latency:null,burn:null,tokens:null,cost:null};
+      function clearAndRedrawLatencyHover(ix){if(!chartState.latency) return;const {series,overlays,domain:{tMin,tMax},yMax}=chartState.latency;const ctx=latencyTimeseries.getContext('2d');drawLatency(ctx,series,overlays);if(ix==null) return;const w=latencyTimeseries.clientWidth||latencyTimeseries.width;const h=latencyTimeseries.height;const octx=incidentOverlay.getContext('2d');octx.clearRect(0,0,w,h); // redraw incidents
+        if(toggleIncidents&&toggleIncidents.checked&&overlays&&overlays.length){octx.fillStyle='rgba(239,68,68,0.12)';overlays.forEach(inc=>{const x1=(Math.max(inc.start,tMin)-tMin)/(tMax-tMin||1)*(w-1);const x2=(Math.min(inc.end,tMax)-tMin)/(tMax-tMin||1)*(w-1);if(x2>=0&&x1<=w)octx.fillRect(Math.max(0,x1),0,Math.max(1,x2-x1),h);});}
+        // vertical line
+        const x=(ix/((series[0]?.points?.length||1)-1))*(w-1);
+        octx.strokeStyle='rgba(255,255,255,0.4)';octx.beginPath();octx.moveTo(x,0);octx.lineTo(x,h);octx.stroke();
+        // tooltip
+        const tt=[];const tVal=series[0]?.points?.[ix]?.t; if(tVal){tt.push(new Date(tVal).toLocaleTimeString());}
+        series.forEach((s,si)=>{const p=s.points[ix];if(!p) return;tt.push(`${s.key||'all'} p50=${p.p50??'–'}ms p95=${p.p95??'–'}ms`);});
+        drawTooltip(octx,Math.min(w-4,Math.max(4,x+8)),12,tt);
+      }
+      function drawTooltip(ctx,x,y,lines){const pad=6;ctx.save();ctx.font='11px system-ui';const w=Math.max(...lines.map(t=>ctx.measureText(t).width))+pad*2;const h=lines.length*14+pad*2;ctx.fillStyle='rgba(0,0,0,0.7)';ctx.fillRect(x,y,w,h);ctx.strokeStyle='rgba(255,255,255,0.2)';ctx.strokeRect(x+0.5,y+0.5,w-1,h-1);ctx.fillStyle='#e5e7eb';lines.forEach((t,i)=>ctx.fillText(t,x+pad,y+pad+12+ i*14));ctx.restore();}
+      function enableHoverLatency(){const canvas=latencyTimeseries;canvas.addEventListener('mousemove',ev=>{if(!chartState.latency)return;const rect=canvas.getBoundingClientRect();const w=canvas.clientWidth||canvas.width;const n=chartState.latency.series[0]?.points?.length||0; if(!n) return;const x=Math.min(Math.max(0,ev.clientX-rect.left),w-1);const ix=Math.round((x/(w-1))*(n-1));clearAndRedrawLatencyHover(ix);});canvas.addEventListener('mouseleave',()=>clearAndRedrawLatencyHover(null));}
+      function enableHoverBurn(){const canvas=burnRateSpark;canvas.addEventListener('mousemove',ev=>{const w=canvas.clientWidth||canvas.width;const h=canvas.height;const rect=canvas.getBoundingClientRect();const x=Math.min(Math.max(0,ev.clientX-rect.left),w-1);const n=chartState.burn?.burns?.length||0;if(!n)return;const ix=Math.round((x/(w-1))*(n-1));drawBurnLabeled(canvas.getContext('2d'),chartState.burn.points,chartState.burn.target);const v=chartState.burn.burns[ix];const y=Math.max(0,h-(v/chartState.burn.maxB)*(h-1));const ctx=canvas.getContext('2d');ctx.strokeStyle='rgba(255,255,255,0.4)';ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,h);ctx.stroke();drawTooltip(ctx,Math.min(w-4,x+8),8,[`burn ${v.toFixed(2)}`]);});canvas.addEventListener('mouseleave',()=>{if(chartState.burn) drawBurnLabeled(canvas.getContext('2d'),chartState.burn.points,chartState.burn.target);});}
+      function enableHoverTokens(){const canvas=tokensArea;canvas.addEventListener('mousemove',ev=>{if(!chartState.tokens) return;const {pts,maxT}=chartState.tokens;const w=canvas.clientWidth||canvas.width;const h=canvas.height;const rect=canvas.getBoundingClientRect();const x=Math.min(Math.max(0,ev.clientX-rect.left),w-1);const n=pts.length;const ix=Math.round((x/(w-1))*(n-1));drawTokens(canvas.getContext('2d'),[{points:pts}]);const p=pts[ix];const total=(p.tokensPrompt||0)+(p.tokensCompletion||0);const y=h-((total/maxT)*(h-1));const ctx=canvas.getContext('2d');ctx.strokeStyle='rgba(255,255,255,0.4)';ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,h);ctx.stroke();drawTooltip(ctx,Math.min(w-4,x+8),8,[`prompt ${fmtInt(p.tokensPrompt||0)}`,`completion ${fmtInt(p.tokensCompletion||0)}`,`total ${fmtInt(total)}`]);});canvas.addEventListener('mouseleave',()=>{if(chartState.tokens) drawTokens(canvas.getContext('2d'),[{points:chartState.tokens.pts}]);});}
+      function enableHoverCost(){const canvas=costLine;canvas.addEventListener('mousemove',ev=>{if(!chartState.cost) return;const {pts,model,stepArr,cumArr,maxU}=chartState.cost;const w=canvas.clientWidth||canvas.width;const h=canvas.height;const rect=canvas.getBoundingClientRect();const x=Math.min(Math.max(0,ev.clientX-rect.left),w-1);const n=pts.length;const ix=Math.round((x/(w-1))*(n-1));drawCost(canvas.getContext('2d'),[{points:pts}],model);const cum=cumArr[ix];const y=h-((cum/maxU)*(h-1));const ctx=canvas.getContext('2d');ctx.strokeStyle='rgba(255,255,255,0.4)';ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,h);ctx.stroke();drawTooltip(ctx,Math.min(w-4,x+8),8,[`cum ${fmtUsd(cum)}`,`step ${fmtUsd(stepArr[ix])}`]);});canvas.addEventListener('mouseleave',()=>{if(chartState.cost) drawCost(canvas.getContext('2d'),[{points:chartState.cost.pts}],chartState.cost.model);});}
+  function populateCompareValues(traces){const mode=cmpSelect.value;if(mode==='none'||mode==='baseline') return;const key=mode==='model'?'model':'region';const vals=Array.from(new Set(traces.map(t=>t[key]).filter(Boolean))).sort();cmpValues.innerHTML='';vals.forEach(v=>{const o=document.createElement('option');o.value=v;o.textContent=v;cmpValues.appendChild(o);});}
+  function populateCostTable(traces){costCompareSummary.style.display='none';costCompareContainer.style.display='none';document.querySelector('#costBreakdownTable').parentElement.style.display='block';const tbody=document.querySelector('#costBreakdownTable tbody');tbody.innerHTML='';if(!traces||!traces.length){const tr=document.createElement('tr');tr.innerHTML='<td colspan="6" class="muted" style="padding:6px;">No token data</td>';tbody.appendChild(tr);costLegend.textContent='Stacked tokens + $ line';return;}const {rows,totalPrompt,totalComp,totalUsd}=computeCostAgg(traces);for(const r of rows){const tr=document.createElement('tr');tr.innerHTML=`<td style=\"padding:6px;\">${r.endpoint}</td><td style=\"padding:6px;\">${r.model}</td><td style=\"padding:6px;text-align:right;\">${fmtInt(r.prompt)}</td><td style=\"padding:6px;text-align:right;\">${fmtInt(r.completion)}</td><td style=\"padding:6px;text-align:right;\">${fmtInt(r.total)}</td><td style=\"padding:6px;text-align:right;\">${fmtUsd(r.usd)}</td>`;tbody.appendChild(tr);}const tr=document.createElement('tr');tr.innerHTML=`<td colspan=\"2\" style=\"padding:6px;text-align:right;border-top:1px solid #243244;\"><strong>Total</strong></td><td style=\"padding:6px;text-align:right;border-top:1px solid #243244;\"><strong>${fmtInt(totalPrompt)}</strong></td><td style=\"padding:6px;text-align:right;border-top:1px solid #243244;\"><strong>${fmtInt(totalComp)}</strong></td><td style=\"padding:6px;text-align:right;border-top:1px solid #243244;\"><strong>${fmtInt(totalPrompt+totalComp)}</strong></td><td style=\"padding:6px;text-align:right;border-top:1px solid #243244;\"><strong>${fmtUsd(totalUsd)}</strong></td>`;tbody.appendChild(tr);costLegend.textContent=`Total tokens: ${fmtInt(totalPrompt+totalComp)} • Total approx: ${fmtUsd(totalUsd)}`;}
+  function populateCostCompare(baseTr,canTr){const baseAgg=computeCostAgg(baseTr);const canAgg=computeCostAgg(canTr);document.querySelector('#costBreakdownTable').parentElement.style.display='none';costCompareContainer.style.display='flex';costCompareSummary.style.display='block';const summary=`Baseline ${fmtUsd(baseAgg.totalUsd)} • ${fmtInt(baseAgg.totalPrompt+baseAgg.totalComp)} tok  |  Canary ${fmtUsd(canAgg.totalUsd)} • ${fmtInt(canAgg.totalPrompt+canAgg.totalComp)} tok  |  Δ ${fmtUsd(canAgg.totalUsd-baseAgg.totalUsd)} • ${fmtInt((canAgg.totalPrompt+canAgg.totalComp)-(baseAgg.totalPrompt+baseAgg.totalComp))} tok`;
+    costCompareSummary.textContent=summary;function fill(tableId,rows,tot){const tbody=document.querySelector(`#${tableId} tbody`);tbody.innerHTML='';for(const r of rows){const tr=document.createElement('tr');tr.innerHTML=`<td style=\"padding:6px;\">${r.endpoint}</td><td style=\"padding:6px;\">${r.model}</td><td style=\"padding:6px;text-align:right;\">${fmtInt(r.prompt)}</td><td style=\"padding:6px;text-align:right;\">${fmtInt(r.completion)}</td><td style=\"padding:6px;text-align:right;\">${fmtInt(r.total)}</td><td style=\"padding:6px;text-align:right;\">${fmtUsd(r.usd)}</td>`;tbody.appendChild(tr);}const tr=document.createElement('tr');tr.innerHTML=`<td colspan=\"2\" style=\"padding:6px;text-align:right;border-top:1px solid #243244;\"><strong>Total</strong></td><td style=\"padding:6px;text-align:right;border-top:1px solid #243244;\"><strong>${fmtInt(tot.totalPrompt)}</strong></td><td style=\"padding:6px;text-align:right;border-top:1px solid #243244;\"><strong>${fmtInt(tot.totalComp)}</strong></td><td style=\"padding:6px;text-align:right;border-top:1px solid #243244;\"><strong>${fmtInt(tot.totalPrompt+tot.totalComp)}</strong></td><td style=\"padding:6px;text-align:right;border-top:1px solid #243244;\"><strong>${fmtUsd(tot.totalUsd)}</strong></td>`;tbody.appendChild(tr);}fill('costTableBaseline',baseAgg.rows,baseAgg);fill('costTableCanary',canAgg.rows,canAgg);costLegend.textContent='Stacked tokens + $ line (canary)';}
+      function getSloTarget(){const sel=sloTargetSelect.value;if(sel==='custom'){const v=Number(sloTargetCustom.value);return (!isNaN(v)&&v>0&&v<1)?v:0.995;}return Number(sel);}
+  async function updateEnhancements(){try{const abs=absoluteRange();const win=getWindow();const now=Date.now();const from=abs?abs.from:(now-win*60000),to=abs?abs.to:now;const epSel=document.getElementById('endpointFilter').value;const traces=await fetchAllTracesForRange(epSel,from,to,500,30);const mode=cmpSelect.value; if(mode==='baseline'){const base=loadCohort('obsBaseline');const can=loadCohort('obsCanary');if(base&&can){const baseTr=await fetchAllTracesForRange(base.endpoint,base.from,base.to,500,30);const canTr=await fetchAllTracesForRange(can.endpoint,can.from,can.to,500,30);const b= bucketize(baseTr,base.from,base.to,60,[]).series;const c= bucketize(canTr,can.from,can.to,60,[]).series;const target=getSloTarget();const sliB=computeSLI(b);const sliC=computeSLI(c);const ebr=clamp01((target-(1-sliC.sli))/target);sliValue.textContent=fmtPct(sliC.sli);const delta=((sliC.sli-sliB.sli)*100).toFixed(2);sliMeta.textContent=`baseline ${fmtPct(sliB.sli)} • canary ${fmtPct(sliC.sli)} • Δ ${delta}pp`;ebrValue.textContent=fmtPct(ebr);ebrBar.style.width=(ebr*100).toFixed(1)+'%';ebrBar.style.background=ebr>=0.5?'#34d399':(ebr>=0.2?'#f59e0b':'#fb7185');ebrMeta.textContent=`spent ${fmtPct(1-ebr)}`;const merged=[];const len=c[0]?.points?.length||0;for(let i=0;i<len;i++){let ok=0,total=0;c.forEach(s=>{ok+=s.points[i].ok;total+=s.points[i].count;});merged.push({ok,total});}drawBurnLabeled(burnRateSpark.getContext('2d'),merged,target);const incidents=await fetchIncidents(can.from,can.to);latencyLegend.textContent='Baseline vs Canary (p50 / p95)';const lines=[];if(b.length) lines.push(b[0]);if(c.length) lines.push(c[0]);drawLatency(latencyTimeseries.getContext('2d'),lines,incidents);drawHeatLatency(latencyHeatmap.getContext('2d'),c.length?[c[0]]:[]);drawHeatErrors(errorHeatmap.getContext('2d'),c.length?[c[0]]:[]);drawTokens(tokensArea.getContext('2d'),c.length?[c[0]]:[]);const modelForPricing=canTr.find(t=>t.model)?.model||'default';drawCost(costLine.getContext('2d'),c.length?[c[0]]:[],modelForPricing);populateCostCompare(baseTr,canTr);return;}else{latencyLegend.textContent='Save Baseline and Canary to compare';populateCostTable(traces);}}
+        populateCompareValues(traces);const groupBy = mode==='model'?['model'] : mode==='region'?['region'] : [];
+        const {step,series}=bucketize(traces,from,to,60,groupBy);const target=getSloTarget();const sli=computeSLI(series);const ebr=clamp01((target-(1-sli.sli))/target);sliValue.textContent=fmtPct(sli.sli);sliMeta.textContent=`target ${fmtPct(target)} • ok=${sli.ok}/${sli.total}`;ebrValue.textContent=fmtPct(ebr);ebrBar.style.width=(ebr*100).toFixed(1)+'%';ebrBar.style.background=ebr>=0.5?'#34d399':(ebr>=0.2?'#f59e0b':'#fb7185');ebrMeta.textContent=`spent ${fmtPct(1-ebr)}`;const merged=[];const len=series[0]?.points?.length||0;for(let i=0;i<len;i++){let ok=0,total=0;series.forEach(s=>{ok+=s.points[i].ok;total+=s.points[i].count;});merged.push({ok,total});}
+  drawBurnLabeled(burnRateSpark.getContext('2d'),merged,target);const incidents=await fetchIncidents(from,to);drawLatency(latencyTimeseries.getContext('2d'),series,incidents);drawHeatLatency(latencyHeatmap.getContext('2d'),series.length? [series[0]]:[]);drawHeatErrors(errorHeatmap.getContext('2d'),series.length? [series[0]]:[]);drawTokens(tokensArea.getContext('2d'),series.length? [series[0]]:[]);const modelForPricing=(mode==='model'&&cmpValues.selectedOptions[0]?.value)||traces.find(t=>t.model)?.model||'default';drawCost(costLine.getContext('2d'),series.length? [series[0]]:[],modelForPricing);populateCostTable(traces);}catch(e){console.error('enhancements update failed',e);}}
+      function onCmpMode(){const v=cmpSelect.value;cmpValuesContainer.style.display=(v==='model'||v==='region')?'inline-flex':'none';baselineCanaryControls.style.display=(v==='baseline')?'inline-flex':'none';updateEnhancements();}
+  cmpSelect.addEventListener('change',onCmpMode);cmpValues.addEventListener('change',()=>updateEnhancements());sloTargetSelect.addEventListener('change',()=>{sloTargetCustom.style.display=sloTargetSelect.value==='custom'?'inline-block':'none';updateEnhancements();});sloTargetCustom.addEventListener('change',()=>updateEnhancements());toggleIncidents.addEventListener('change',()=>updateEnhancements());
+  document.getElementById('saveBaselineBtn').addEventListener('click',()=>{saveCohort('obsBaseline');updateEnhancements();});
+  document.getElementById('saveCanaryBtn').addEventListener('click',()=>{saveCohort('obsCanary');updateEnhancements();});
+  enableHoverLatency();enableHoverBurn();enableHoverTokens();enableHoverCost();
+  // Realtime updates via SSE (optional, falls back silently if blocked)
+  try {
+    const live = document.createElement('span');
+    live.id = 'liveIndicator';
+    live.className = 'muted';
+    live.style.marginLeft = '8px';
+    live.style.fontSize = '11px';
+    document.getElementById('lastRefresh').after(live);
+    if ('EventSource' in window) {
+      const es = new EventSource('/events');
+      let last = 0;
+      es.addEventListener('hello', ()=>{ live.textContent = 'live'; });
+      es.addEventListener('ping', ()=>{ /* keepalive */ });
+      es.addEventListener('trace', ()=>{
+        const now = Date.now();
+        if (now - last > 1500) { // throttle UI work
+          last = now;
+          load(false); // refresh without resetting cursor
+        }
+        live.textContent = 'live •';
+        setTimeout(()=>{ live.textContent = 'live'; }, 1000);
+      });
+      es.onerror = ()=>{ live.textContent = ''; es.close(); };
+    }
+  } catch(_){}
+  syncPresetToRange();load(true);setInterval(()=>{load(false);updateEnhancements();},15000);updateEnhancements();
     </script>
   </body>
 </html>

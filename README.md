@@ -36,6 +36,8 @@ npm run dev
 - `GET /` → tiny dashboard
 - `GET /traces` → raw trace events with filters, pagination (cursor), and exports
 - `GET /latency_histogram` → quick histogram for a given endpoint/time window
+ - `GET /incidents` → optional incidents list (filtered by `?from`/`?to` epoch ms). Served from `public/incidents.json` if present.
+ - `GET /timeseries` → bucketed counts (ok/total) and latency percentiles for a window or absolute range.
 
 ## Cost & safety
 - Keep intervals modest (e.g., 60–180s). Most probes are tiny and deterministic.
@@ -81,3 +83,53 @@ Pushes to `main` trigger GitHub Actions deploying with `flyctl`. Provide repo se
 
 ## Testing
 Run `npm test` (Node built-in test runner) for store + status endpoint tests.
+
+## UI enhancements (dashboard)
+- SLO widgets: current SLI (success rate), error budget remaining bar, and burn-rate sparkline.
+- Incident overlays: shaded windows on latency chart from `/incidents` or `public/incidents.json`.
+- Compare view: group by model or region; baseline/canary toggles.
+- Heatmaps: latency percentiles and error breakdowns.
+- Cost panel: stacked tokens and approximate cumulative cost line with simple pricing heuristics.
+
+To provide incidents, either use the bundled `/incidents` endpoint (it reads `public/incidents.json`) or edit `public/incidents.json` with entries like:
+
+[
+	{ "id": "INC-1", "start": 1710001000000, "end": 1710001600000, "severity": "high", "title": "Example outage" }
+]
+
+
+## Ingestion (Phase M2)
+
+Endpoint:
+- `POST /ingest/trace` — accepts a normalized trace JSON and stores it in memory (and SQLite when enabled). Body must include: `ts` (epoch ms), `endpoint`, `ok`, `latencyMs`, and optional token fields. See `src/schemas.js` for the minimal schema.
+
+Auth:
+- Set `INGEST_API_KEY=your-secret` to require a key. Clients send `x-api-key: your-secret` or `Authorization: Bearer your-secret`.
+
+SDKs:
+- A minimal JS helper will be provided under `packages/common` (pricing, schema, utils) and a future `packages/sdk-js` wrapper to instrument OpenAI calls and POST traces to `/ingest/trace`.
+
+## AI-centric observability (logs + search + embeddings)
+
+Flags:
+- ENABLE_AI=1, ENABLE_DB=1, OPENAI_API_KEY, EMBEDDING_MODEL=text-embedding-3-small (default)
+- LOG_SIM_ENABLED=1 (optional), LOG_SIM_INTERVAL_MS=30000
+
+Endpoints:
+- POST /logs/ingest (NDJSON or JSON array, requires INGEST_API_KEY)
+- GET /logs/sim/start, /logs/sim/stop (requires INGEST_API_KEY)
+- POST /ai/index/logs?limit=32&since=epoch_ms (embeds pending logs)
+- GET /logs/search?query=...&from=&to=&endpoint=&model=&region=&k=20 (hybrid vec+FTS)
+- GET /ai/metrics, GET /ai/summary (helpers that reuse /timeseries)
+
+Chat (beta):
+- UI: Click the "Chat" tab in the dashboard.
+- Backend: POST /ai/chat — returns a concise, LLM-free summary by default. If you enable "Use LLM" in the UI (or send `{ llm: true }`) and set `OPENAI_API_KEY`, it will call the OpenAI Responses API to enhance the summary.
+- Streaming: POST /ai/chat/stream — emits NDJSON lines with `{ delta }` chunks and a final `{ done, citations }`. The UI uses this by default and falls back to /ai/chat.
+- Controls: Start/Stop the log simulator and "Index embeddings" from the Chat tab. Provide `INGEST_API_KEY` (stored locally) to access protected ops.
+
+Quick start for Chat tab:
+1. Set `ENABLE_DB=1`, `ENABLE_AI=1`, `INGEST_API_KEY=your-secret`. Optionally set `OPENAI_API_KEY` for embeddings and LLM enhancement.
+2. Start the server, open the dashboard, switch to Chat, enter your ingest key, Start simulator, optionally Index embeddings, and ask a question.
+3. Toggle "Use LLM" in the Chat tab to get an enhanced summary (requires `OPENAI_API_KEY`).
+

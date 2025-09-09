@@ -1,0 +1,3 @@
+[
+  { "id": "TEST-1", "start": 1710001000000, "end": 1710001600000, "severity": "high", "title": "Synthetic outage window", "runbookUrl": "#" }
+]

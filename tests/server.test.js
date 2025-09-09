@@ -21,3 +21,36 @@ test('GET /status returns structure and reflects injected data', async () => {
   assert.equal(ep.errors.network, 1);
   server.close();
 });
+
+test('GET /incidents returns list (or empty) and supports from/to filtering', async () => {
+  const server = http.createServer(app);
+  await new Promise(res => server.listen(0, res));
+  const port = server.address().port;
+  const now = Date.now();
+  const res = await fetch(`http://127.0.0.1:${port}/incidents?from=${now-1}&to=${now+1}`);
+  assert.equal(res.status, 200);
+  const json = await res.json();
+  assert.ok(Array.isArray(json));
+  server.close();
+});
+
+test('GET /timeseries provides buckets with ok/total and percentiles', async () => {
+  const now = Date.now();
+  // inject some points in store for the last 2 minutes
+  for (let i=0;i<20;i++) {
+    store.push({ ts: now - i*5000, ok: i%5!==0, status: i%5===0?500:200, latencyMs: 50 + i, endpoint: '/v1/chat/completions', model: 'm', region: 'r' });
+  }
+  const server = http.createServer(app);
+  await new Promise(res => server.listen(0, res));
+  const port = server.address().port;
+  const res = await fetch(`http://127.0.0.1:${port}/timeseries?window=5&stepSec=30&endpoint=/v1/chat/completions`);
+  assert.equal(res.status, 200);
+  const json = await res.json();
+  assert.ok(Array.isArray(json.buckets));
+  assert.ok(json.buckets.length > 0);
+  assert.ok('ok' in json.buckets[0]);
+  assert.ok('total' in json.buckets[0]);
+  // percentiles may be null if no ok points in a bucket, but schema should exist
+  assert.ok('p50' in json.buckets[0]);
+  server.close();
+});

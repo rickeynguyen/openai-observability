@@ -8,6 +8,10 @@
     "start": "NODE_ENV=production node src/server.js",
     "test": "NODE_ENV=test node --test"
   },
+  "exports": {
+    "./sdk": "./packages/sdk-js/index.js",
+    "./common": "./packages/common/index.js"
+  },
   "dependencies": {
     "express": "^4.19.2",
     "node-fetch": "^3.3.2",
