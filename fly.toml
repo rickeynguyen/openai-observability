@@ -1,5 +1,5 @@
 # Fly.io app configuration (replace app name after `fly launch`)
-app = "openai-status-lite" # change to your actual app name
+app = "openai-observability" # change to your actual app name
 primary_region = "sjc"
 
 [build]
