@@ -152,14 +152,33 @@ UI:
 - Click Draft with AI to generate a JSON spec; review/edit.
 - Click Create Monitor, then Run Now to execute (tries Playwright, falls back to HTTP fetch).
 
+Spec fields:
+- name: string
+- schedule: one of manual, every_1m, every_5m, every_10m, every_15m, every_30m, hourly
+- startUrl: string
+- timeoutMs: number
+- steps: array of actions: goto | click | type | waitFor | assertTextContains
+	- goto: { action: "goto", url }
+	- click: { action: "click", selector }
+	- type: { action: "type", selector, text, enter?: true }
+	- waitFor: { action: "waitFor", selector, timeoutMs? }
+	- assertTextContains: { action: "assertTextContains", selector?: "body", text: string, any?: true }
+- auth (optional):
+	- headers: object of headerName: value
+	- cookies: array of { name, value, domain?, path?, httpOnly?, secure?, sameSite? }
+
 Endpoints:
 - POST `/synthetics/draft` { prompt } → { spec }
 - POST `/synthetics` { spec } → { id, monitor }
-- GET `/synthetics` → { items }
+- GET `/synthetics` → { items } where each item includes { id, name, schedule, createdAt, lastRun?, nextDueAt? }
 - POST `/synthetics/:id/run` → { ok, statusText, screenshot?, logs[] }
 - GET `/synthetics/runs` → recent runs
+- PATCH `/synthetics/:id/schedule` { schedule } → update schedule
 
 Notes:
 - Playwright is optional. If not installed, the run falls back to a simple HTTP GET + text assert.
 - Screenshots (when available) are saved under `public/synth/` and shown in the modal.
+- Auth: For sites needing session state, include cookies and/or headers under `auth`. The runner injects headers and sets cookies for the domain derived from startUrl (or cookie.domain when provided). HTTP fallback also sends a combined Cookie header.
+- Scheduling: Choose a schedule in the Monitors table. The backend scheduler evaluates due monitors every ~30s and persists runs when SQLite is enabled. UI now shows Last run and Next run.
+- Persistence: Set ENABLE_DB=1 to persist monitors and runs. Without DB, data resets on server restart.
 

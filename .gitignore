@@ -17,6 +17,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Synthetic screenshots
+public/synth/
+
 # Coverage / build artifacts
 coverage/
 .nyc_output/

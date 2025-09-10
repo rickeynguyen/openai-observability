@@ -60,7 +60,7 @@
         <button id="exportJson" style="background:#1f2937;border:1px solid #243244;color:#e5e7eb;border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer">JSON</button>
       </div>
     </h1>
-  <div style="display:flex;gap:12px;margin-top:8px;align-items:center"><button id="viewSummary" class="nav-btn active">Summary</button><button id="viewTraces" class="nav-btn">Traces</button><button id="viewChat" class="nav-btn">Chat</button><button id="createSyntheticBtn" class="nav-btn" title="Create synthetic monitor using AI">Create Synthetic</button><span id="lastRefresh" class="muted" style="margin-left:auto;font-size:11px"></span></div>
+  <div style="display:flex;gap:12px;margin-top:8px;align-items:center"><button id="viewSummary" class="nav-btn active">Summary</button><button id="viewTraces" class="nav-btn">Traces</button><button id="viewChat" class="nav-btn">Chat</button><button id="viewSynthetics" class="nav-btn">Synthetics</button><button id="createSyntheticBtn" class="nav-btn" title="Create synthetic monitor using AI">Create Synthetic</button><span id="lastRefresh" class="muted" style="margin-left:auto;font-size:11px"></span></div>
     <div class="row" id="cards"></div>
     <!-- Enhancements (visible with Summary view) -->
     <section id="enhancements" style="display:block;margin-top:16px">
@@ -221,6 +221,57 @@
       </div>
       <div id="traceMeta" class="muted" style="margin-top:6px;font-size:11px"></div>
     </div>
+    <!-- Synthetics Tab -->
+    <div id="syntheticsContainer" style="display:none;margin-top:16px">
+      <div class="row">
+        <div class="card" style="flex:1; min-width:300px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <div style="font-weight:600;">Monitors</div>
+            <button id="refreshSynthMonitors" class="btn" type="button">Refresh</button>
+            <label style="display:flex;align-items:center;gap:4px;font-size:11px;">
+              <input type="checkbox" id="showDeletedSynth" style="margin:0;"> <span class="muted">Show deleted</span>
+            </label>
+          </div>
+          <div style="overflow:auto; max-height:40vh;">
+    <table id="synthMonitorsTable" style="width:100%; border-collapse:collapse; font-size:12px;">
+              <thead>
+                <tr>
+                  <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">ID</th>
+                  <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Name</th>
+      <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Schedule</th>
+                  <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Last run</th>
+                  <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Next run</th>
+                  <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Countdown</th>
+                  <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Created</th>
+                  <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Actions</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card" style="flex:1; min-width:300px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <div style="font-weight:600;">Recent Runs</div>
+            <button id="refreshSynthRuns" class="btn" type="button">Refresh</button>
+          </div>
+          <div style="overflow:auto; max-height:40vh;">
+            <table id="synthRunsTable" style="width:100%; border-collapse:collapse; font-size:12px;">
+              <thead>
+                <tr>
+                  <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Run</th>
+                  <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Monitor</th>
+                  <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Started</th>
+                  <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Status</th>
+                  <th style="text-align:left; border-bottom:1px solid #243244; padding:6px;">Screenshot</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
     <!-- Chat Tab -->
     <div id="chatContainer" style="display:none;margin-top:16px">
       <div class="card" style="margin-bottom:12px;">
@@ -338,7 +389,7 @@
             <div style="font-weight:700;">Create Synthetic Monitor</div>
             <button id="synthClose" class="btn" type="button">Close</button>
           </div>
-          <div class="muted" style="font-size:12px; margin-bottom:8px;">Describe the synthetic test in natural language. We'll draft a test spec, you can edit, then create and run it.</div>
+          <div class="muted" style="font-size:12px; margin-bottom:8px;">Describe the synthetic test in natural language. We'll draft a test spec, you can edit, then create and run it. If a site needs login, you can include cookies under <code>auth.cookies</code> or headers under <code>auth.headers</code> in the spec.</div>
           <textarea id="synthPrompt" rows="3" placeholder="e.g., Create a synthetic test to https://chatgpt.com. In the input box, type 'tell me a joke' and hit Enter. Pass if a response is shown." style="width:100%; background:#111827; color:#e5e7eb; border:1px solid #243244; border-radius:6px; padding:8px;"></textarea>
           <div style="display:flex; gap:8px; margin-top:8px;">
             <button id="synthDraft" class="btn btn-primary" type="button">Draft with AI</button>
@@ -383,6 +434,7 @@
           if(!r.ok){ msg.textContent='Create failed: '+(j.error||r.status); return; }
           msg.textContent='Created monitor #'+j.id;
           const runBtn = document.getElementById('synthRun'); runBtn.disabled=false; runBtn.dataset.id=String(j.id);
+          try{ loadSynthMonitors(); }catch(_){ }
         }catch(e){ msg.textContent='Create error'; }
       }
       async function runSynth(){
@@ -397,6 +449,7 @@
           const logs = (j.logs||[]).map(l=> new Date(l.ts).toISOString()+': '+l.msg).join('\n');
           out.textContent = logs || '(no logs)';
           if (j.screenshot){ const img = document.createElement('img'); img.src = j.screenshot; img.alt = 'screenshot'; img.style.maxWidth='100%'; img.style.marginTop='8px'; out.appendChild(document.createElement('br')); out.appendChild(img); }
+          try{ loadSynthRuns(); }catch(_){ }
         }catch(e){ msg.textContent='Run error'; }
       }
       document.getElementById('synthDraft').addEventListener('click', draftSynth);
@@ -485,7 +538,7 @@
       function exportTrace(fmt){if(!traceState.currentPage.length)return;if(fmt==='json')return download('traces_page.json',JSON.stringify(traceState.currentPage,null,2));const header=['iso','status','ok','latencyMs','endpoint','model','region','errType','tokensTotal','tokensPrompt','tokensCompletion','respBytes'];const lines=[header.join(','),...traceState.currentPage.map(r=>header.map(h=>r[h]??'').join(','))];download('traces_page.csv',lines.join('\n'));}
       async function exportAllTraces(fmt){try{const win=getWindow();const eps=selectedEndpoints();const abs=absoluteRange();const base=abs?new URLSearchParams({from:String(abs.from),to:String(abs.to)}):new URLSearchParams({window:String(win)});if(eps.length) base.set('endpoint',eps.join(','));if(document.getElementById('errorsOnly').checked) base.set('errorsOnly','1');const slowVal=document.getElementById('slowMs').value;if(slowVal) base.set('slowMs',slowVal);let all=[];let cursor=null;let direction='prev';const limit=500;let safety=0;while(safety<50){const qp=new URLSearchParams(base.toString());qp.set('limit',String(limit));if(cursor){qp.set('cursor',String(cursor));qp.set('direction',direction);}const r=await fetch('/traces?'+qp.toString());const j=await r.json();all=all.concat(j.points);if(!j.cursor||!j.cursor.next||j.points.length<limit) break;cursor=j.cursor.next;direction='prev';safety++;}if(fmt==='json')return download('traces_all.json',JSON.stringify(all,null,2));const header=['iso','status','ok','latencyMs','endpoint','model','region','errType','tokensTotal','tokensPrompt','tokensCompletion','respBytes'];const lines=[header.join(','),...all.map(r=>header.map(h=>r[h]??'').join(','))];download('traces_all.csv',lines.join('\n'));}catch(e){console.error('export all traces failed',e);}}
   async function fetchLatencyHistogram(ep,id,abs,win){try{const params=abs?new URLSearchParams({from:String(abs.from),to:String(abs.to),endpoint:ep}):new URLSearchParams({window:String(win),endpoint:ep});const r=await fetch('/latency_histogram?'+params.toString(),{cache:'no-store'});const j=await r.json();const canvas=document.getElementById(id);if(!canvas)return;const ctx=canvas.getContext('2d');ctx.clearRect(0,0,canvas.width,canvas.height);if(!j.buckets||!j.buckets.length){ctx.fillStyle='#64748b';ctx.font='10px system-ui';ctx.fillText('no data',4,16);return;}const maxC=Math.max(...j.buckets.map(b=>b.count));const w=canvas.clientWidth||canvas.width;const h=canvas.height;const barW=w/j.buckets.length;j.buckets.forEach((b,i)=>{const bh=(b.count/maxC)*(h-4);ctx.fillStyle='#3b82f6';ctx.fillRect(i*barW,h-bh,barW-1,bh);});}catch(e){}}
-    function download(filename,text){const blob=new Blob([text],{type:'text/plain'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),4000);}function setActiveTab(id){['viewSummary','viewTraces','viewChat'].forEach(x=>{const el=document.getElementById(x);if(el){if(x===id)el.classList.add('active');else el.classList.remove('active');}})}
+  function download(filename,text){const blob=new Blob([text],{type:'text/plain'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),4000);}function setActiveTab(id){['viewSummary','viewTraces','viewChat','viewSynthetics'].forEach(x=>{const el=document.getElementById(x);if(el){if(x===id)el.classList.add('active');else el.classList.remove('active');}})}
   document.getElementById('windowSelect').addEventListener('change',()=>{syncPresetToRange();load(true);updateEnhancements();refreshChatLogs();});
   document.getElementById('useCustomRange').addEventListener('change',()=>{updateRangeInputsEnabled();load(true);updateEnhancements();refreshChatLogs();});
   document.getElementById('applyRange').addEventListener('click',()=>{load(true);updateEnhancements();refreshChatLogs();});
@@ -495,28 +548,150 @@
   document.getElementById('viewSummary').addEventListener('click',()=>{
     document.getElementById('tracesContainer').style.display='none';
     document.getElementById('chatContainer').style.display='none';
+    const sc=document.getElementById('syntheticsContainer'); if(sc) sc.style.display='none';
     document.getElementById('cards').style.display='flex';
     document.getElementById('enhancements').style.display='block';
     setActiveTab('viewSummary');
     stopChatLogsTimer();
+    stopSynthTimer();
   });
   document.getElementById('viewTraces').addEventListener('click',()=>{
     document.getElementById('cards').style.display='none';
     document.getElementById('enhancements').style.display='none';
     document.getElementById('chatContainer').style.display='none';
+    const sc=document.getElementById('syntheticsContainer'); if(sc) sc.style.display='none';
     document.getElementById('tracesContainer').style.display='block';
     setActiveTab('viewTraces');
-    stopChatLogsTimer();
+  stopChatLogsTimer();
+  stopSynthTimer(); stopCountdowns();
   });
   document.getElementById('viewChat').addEventListener('click',()=>{
     document.getElementById('cards').style.display='none';
     document.getElementById('enhancements').style.display='none';
     document.getElementById('tracesContainer').style.display='none';
+    const sc=document.getElementById('syntheticsContainer'); if(sc) sc.style.display='none';
     document.getElementById('chatContainer').style.display='block';
     setActiveTab('viewChat');
     refreshChatLogs();
     startChatLogsTimer();
+  stopSynthTimer(); stopCountdowns();
   });
+  // Synthetics tab navigation + listing
+  document.getElementById('viewSynthetics').addEventListener('click',()=>{
+    document.getElementById('cards').style.display='none';
+    document.getElementById('enhancements').style.display='none';
+    document.getElementById('tracesContainer').style.display='none';
+    document.getElementById('chatContainer').style.display='none';
+    const sc=document.getElementById('syntheticsContainer'); if(sc) sc.style.display='block';
+    setActiveTab('viewSynthetics');
+  stopChatLogsTimer(); updateCountdowns();
+    loadSynthMonitors();
+    loadSynthRuns();
+    startSynthTimer();
+  });
+  async function loadSynthMonitors(){
+    try{
+      const showDeleted=document.getElementById('showDeletedSynth')?.checked;
+      const r=await fetch('/synthetics'+(showDeleted?'?deleted=1':''),{cache:'no-store'}); if(!r.ok) return;
+      const j=await r.json();
+      const tbody=document.querySelector('#synthMonitorsTable tbody'); if(!tbody) return;
+      tbody.innerHTML='';
+      (j.items||[]).forEach(m=>{
+        const tr=document.createElement('tr');
+        const created=m.createdAt? new Date(m.createdAt).toLocaleString(): '';
+        const sched = m.schedule || 'manual';
+        const lastRun = m.lastRun ? `${new Date(m.lastRun.startedAt).toLocaleString()} • ${m.lastRun.ok? 'OK' : (m.lastRun.statusText||'fail')}` : '';
+        const nextRun = m.nextDueAt ? new Date(m.nextDueAt).toLocaleString() : '';
+        const schedSel = `<select data-sched-id="${m.id}" style="background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:4px;padding:2px 4px;">
+          <option value="manual" ${sched==='manual'?'selected':''}>manual</option>
+          <option value="every_1m" ${sched==='every_1m'?'selected':''}>every 1m</option>
+          <option value="every_5m" ${sched==='every_5m'?'selected':''}>every 5m</option>
+          <option value="every_10m" ${sched==='every_10m'?'selected':''}>every 10m</option>
+          <option value="every_15m" ${sched==='every_15m'?'selected':''}>every 15m</option>
+          <option value="every_30m" ${sched==='every_30m'?'selected':''}>every 30m</option>
+          <option value="hourly" ${sched==='hourly'?'selected':''}>hourly</option>
+        </select>`;
+        const deletedBadge = m.deleted? '<span class="pill" style="background:#475569;color:#e2e8f0;">deleted</span>' : '';
+        tr.innerHTML=`<td style="padding:6px;border-bottom:1px solid #243244;">${m.id}</td>
+          <td style="padding:6px;border-bottom:1px solid #243244;">${m.name||m.spec?.name||''}</td>
+          <td style="padding:6px;border-bottom:1px solid #243244;">${schedSel}</td>
+          <td style="padding:6px;border-bottom:1px solid #243244;">${lastRun}</td>
+          <td style="padding:6px;border-bottom:1px solid #243244;" data-next-ts="${m.nextDueAt||''}">${nextRun}</td>
+          <td style="padding:6px;border-bottom:1px solid #243244;" data-countdown="${m.nextDueAt||''}">${m.nextDueAt? '—' : ''}</td>
+          <td style="padding:6px;border-bottom:1px solid #243244;">${created} ${deletedBadge}</td>
+          <td style="padding:6px;border-bottom:1px solid #243244;">${ m.deleted ? `<button class='btn' data-restore-id='${m.id}'>Restore</button>` : `<button class=\"btn\" data-run-id=\"${m.id}\">Run</button> <button class=\"btn\" data-edit-id=\"${m.id}\">Edit</button>`}</td>`;
+        tbody.appendChild(tr);
+      });
+      updateCountdowns?.();
+      tbody.querySelectorAll('button[data-run-id]').forEach(btn=>{
+        btn.addEventListener('click', async ()=>{
+          const id=btn.getAttribute('data-run-id'); btn.disabled=true; const old=btn.textContent; btn.textContent='Running…';
+          try{ const r2=await fetch(`/synthetics/${id}/run`,{method:'POST'}); await r2.json().catch(()=>({})); }
+          catch(_){ }
+          btn.disabled=false; btn.textContent=old||'Run';
+          loadSynthRuns();
+        });
+      });
+      tbody.querySelectorAll('button[data-restore-id]').forEach(btn=>{
+        btn.addEventListener('click', async ()=>{
+          const id=btn.getAttribute('data-restore-id');
+          try{ await fetch(`/synthetics/${id}/restore`,{method:'POST'}); }catch(_){ }
+          loadSynthMonitors();
+        });
+      });
+      tbody.querySelectorAll('button[data-edit-id]').forEach(btn=>{
+        btn.addEventListener('click', async ()=>{
+          const id=btn.getAttribute('data-edit-id');
+          openEditMonitor(id);
+        });
+      });
+      // Handle schedule changes
+      tbody.querySelectorAll('select[data-sched-id]').forEach(sel=>{
+        sel.addEventListener('change', async ()=>{
+          const id = sel.getAttribute('data-sched-id');
+          const schedule = sel.value;
+          try{
+            await fetch(`/synthetics/${id}/schedule`,{ method:'PATCH', headers:{ 'content-type':'application/json' }, body: JSON.stringify({ schedule }) });
+          }catch(_){ }
+        });
+      });
+    }catch(_){ /* ignore */ }
+  }
+  async function loadSynthRuns(){
+    try{
+      const r=await fetch('/synthetics/runs',{cache:'no-store'}); if(!r.ok) return;
+      const j=await r.json();
+      const tbody=document.querySelector('#synthRunsTable tbody'); if(!tbody) return;
+      tbody.innerHTML='';
+      (j.items||[]).forEach(run=>{
+        const started=run.startedAt? new Date(run.startedAt).toLocaleString(): '';
+        const ok=!!run.ok; const status= ok? '<span class="pill" style="background:#34d399; color:#0b0f14; font-weight:600;">OK</span>' : `<span class="pill" style="background:#fb7185; color:#0b0f14; font-weight:600;">${(run.statusText||'fail')}</span>`;
+        const shot= run.screenshot ? `<a href="${run.screenshot}" target="_blank" rel="noopener">view</a>` : '';
+        const tr=document.createElement('tr');
+        tr.innerHTML=`<td style="padding:6px;border-bottom:1px solid #243244;"><button class="btn" data-run-detail="${run.id}">#${run.id}</button></td>
+          <td style="padding:6px;border-bottom:1px solid #243244;">#${run.monitorId}</td>
+          <td style="padding:6px;border-bottom:1px solid #243244;">${started}</td>
+          <td style="padding:6px;border-bottom:1px solid #243244;">${status}</td>
+          <td style="padding:6px;border-bottom:1px solid #243244;">${shot}</td>`;
+        tbody.appendChild(tr);
+      });
+      tbody.querySelectorAll('button[data-run-detail]').forEach(btn=>{
+        btn.addEventListener('click', async ()=>{
+          const rid=btn.getAttribute('data-run-detail');
+          try{ const r=await fetch(`/synthetics/runs/${rid}`,{cache:'no-store'}); if(!r.ok) return; const j=await r.json(); openRunDetail(j); }catch(_){ }
+        });
+      });
+    }catch(_){ /* ignore */ }
+  }
+  let synthTimer=null; function startSynthTimer(){ if(synthTimer) return; synthTimer=setInterval(()=>{ const vis=document.getElementById('syntheticsContainer').style.display!=='none'; if(vis){ loadSynthMonitors(); loadSynthRuns(); } },7000); }
+  function stopSynthTimer(){ if(synthTimer){ clearInterval(synthTimer); synthTimer=null; } }
+  // Countdown logic
+  let countdownTimer=null; function tickCountdown(){ const now=Date.now(); document.querySelectorAll('[data-countdown]').forEach(td=>{ const ts=Number(td.getAttribute('data-countdown')); if(!ts){ td.textContent=''; return; } const diff=ts-now; if(diff<=0){ td.textContent='due'; return; } const s=Math.floor(diff/1000); const m=Math.floor(s/60); const rem=s%60; td.textContent= m>0 ? `${m}m ${rem}s` : `${rem}s`; }); }
+  function updateCountdowns(){ if(!countdownTimer){ countdownTimer=setInterval(()=>{ const vis=document.getElementById('syntheticsContainer').style.display!=='none'; if(!vis) return; tickCountdown(); },1000);} tickCountdown(); }
+  function stopCountdowns(){ if(countdownTimer){ clearInterval(countdownTimer); countdownTimer=null; } }
+  const btnSM=document.getElementById('refreshSynthMonitors'); if(btnSM) btnSM.addEventListener('click', loadSynthMonitors);
+  const chkShowDel=document.getElementById('showDeletedSynth'); if(chkShowDel) chkShowDel.addEventListener('change', loadSynthMonitors);
+  const btnSR=document.getElementById('refreshSynthRuns'); if(btnSR) btnSR.addEventListener('click', loadSynthRuns);
   document.getElementById('applyTraceFilters').addEventListener('click',()=>load(true));
   document.getElementById('prevPage').addEventListener('click',()=>{if(!traceState.serverCursors)return;traceState.cursor=traceState.serverCursors.prev;traceState.direction='next';load(false);});
   document.getElementById('nextPage').addEventListener('click',()=>{if(!traceState.serverCursors)return;traceState.cursor=traceState.serverCursors.next;traceState.direction='prev';load(false);});
@@ -1071,6 +1246,432 @@
   }catch(_){ }
   updateRangeInputsEnabled();
   syncPresetToRange();load(true);setInterval(()=>{load(false);updateEnhancements();const chatVisible=document.getElementById('chatContainer').style.display!=='none'; if(chatVisible) refreshChatLogs();},15000);updateEnhancements();
+
+  // === Synthetic Edit & Run Detail Modals ===
+  const editModal=document.createElement('div');
+  editModal.id='synthEditModal';
+  editModal.style.cssText='display:none;position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:9999;align-items:center;justify-content:center';
+  editModal.innerHTML=`<div style="background:#0b0f14;border:1px solid #243244;border-radius:10px;padding:14px;width:min(760px,94vw);max-height:90vh;overflow:auto;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+      <div style="font-weight:600;">Edit Synthetic Monitor</div>
+      <button class="btn" id="synthEditClose" type="button">Close</button>
+    </div>
+    <div id="synthEditMeta" class="muted" style="font-size:12px;margin-bottom:6px;"></div>
+    <div style="display:flex; gap:10px; align-items:stretch;">
+      <div style="flex:1; min-width:260px; display:flex; flex-direction:column;">
+        <div id="synthEditSteps" style="margin-top:6px; border:1px solid #243244; border-radius:6px; padding:6px; max-height:260px; overflow:auto; font-size:12px;"></div>
+      </div>
+      <div style="flex:1; min-width:260px; display:flex; flex-direction:column;">
+        <div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;margin-top:6px;">
+          <span class="muted">Live JSON (read-only)</span>
+          <button class="btn" id="toggleRawSpec" type="button" style="font-size:10px;padding:4px 8px;">Edit Raw</button>
+        </div>
+        <textarea id="synthEditSpec" rows="16" style="width:100%;background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:8px;font-family:ui-monospace,monospace;font-size:11px;line-height:1.3;resize:vertical;"></textarea>
+      </div>
+    </div>
+    <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; align-items:flex-end;">
+      <label style="font-size:11px; display:flex; flex-direction:column; gap:2px;" class="muted">Action
+        <select id="newStepAction" style="background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:4px;padding:4px;min-width:90px;">
+          <option value="goto">goto</option>
+          <option value="click">click</option>
+          <option value="type">type</option>
+          <option value="waitfor">waitfor</option>
+          <option value="wait">wait</option>
+          <option value="asserttextcontains">asserttextcontains</option>
+        </select>
+      </label>
+      <label style="font-size:11px; display:flex; flex-direction:column; gap:2px;" class="muted">Selector/URL
+        <input id="newStepTarget" type="text" placeholder="selector or url" style="background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:4px;padding:4px;min-width:150px;" />
+      </label>
+      <label style="font-size:11px; display:flex; flex-direction:column; gap:2px;" class="muted">Text/Value
+        <input id="newStepText" type="text" placeholder="text/value" style="background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:4px;padding:4px;min-width:150px;" />
+      </label>
+      <label style="font-size:11px; display:flex; flex-direction:column; gap:2px;" class="muted">Extra JSON
+        <input id="newStepExtra" type="text" placeholder='{"retryMs":3000}' style="background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:4px;padding:4px;min-width:140px;" />
+      </label>
+      <button class="btn btn-accent" id="addStepBtn" type="button" style="align-self:flex-start;">Add Step</button>
+  <button class="btn btn-accent" id="synthEditSave" type="button" style="align-self:flex-start;">Save</button>
+      <button class="btn" id="synthEditDelete" type="button" style="background:#1f2937;border-color:#dc2626;color:#fca5a5;align-self:flex-start;">Delete</button>
+      <span id="synthEditMsg" class="muted" style="font-size:12px;"></span>
+    </div>
+    <hr style="margin:14px 0;border:none;border-top:1px solid #1e293b;" />
+    <div style="font-weight:600;margin-bottom:6px;">AI Assist Refine</div>
+    <div style="font-size:11px;" class="muted">Enter a natural language change (e.g. "Add a wait step then assert the page contains 'ChatGPT'"). We will draft a new spec; you can merge or apply it.</div>
+    <div style="display:flex;gap:6px;margin-top:6px;align-items:flex-start;">
+      <textarea id="synthEditPrompt" rows="3" style="flex:1;background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:6px;font-family:ui-monospace,monospace;font-size:12px;" placeholder="Describe the change you want..."></textarea>
+      <button class="btn" id="synthEditDraft" type="button">Draft</button>
+    </div>
+    <div id="synthDraftContainer" style="display:none;margin-top:10px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+        <div style="font-weight:600;">Draft Spec</div>
+        <button class="btn" id="synthDraftMerge" type="button">Merge</button>
+        <button class="btn" id="synthDraftReplace" type="button">Replace</button>
+        <button class="btn" id="synthDraftDiscard" type="button">Discard</button>
+      </div>
+      <textarea id="synthDraftSpec" rows="10" style="width:100%;background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:8px;font-family:ui-monospace,monospace;font-size:12px;"></textarea>
+      <div id="synthDraftSteps" style="margin-top:8px;font-size:11px;display:none;"></div>
+      <div id="synthDiffPanel" style="display:none;margin-top:10px;">
+        <div style="font-weight:600;margin-bottom:4px;display:flex;align-items:center;gap:8px;">Diff Preview <button class="btn" id="synthDiffHide" type="button">Hide</button></div>
+        <pre id="synthDiffText" style="background:#111827;border:1px solid #243244;padding:8px;border-radius:6px;font-size:11px;white-space:pre-wrap;max-height:220px;overflow:auto;"></pre>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(editModal);
+  function closeEdit(){editModal.style.display='none';}
+  editModal.addEventListener('click',e=>{if(e.target===editModal) closeEdit();});
+  editModal.querySelector('#synthEditClose').addEventListener('click',closeEdit);
+  let editingMonitorId=null;
+  async function openEditMonitor(id){
+    editingMonitorId=id;
+    const meta=editModal.querySelector('#synthEditMeta');
+    const box=editModal.querySelector('#synthEditSpec');
+    meta.textContent='Loading…'; box.value=''; editModal.style.display='flex'; box.readOnly=true;
+    try{
+      const r=await fetch(`/synthetics/${id}`,{cache:'no-store'});
+      if(!r.ok){ meta.textContent='Fetch failed '+r.status; return; }
+      const j=await r.json();
+      meta.textContent=`Monitor #${j.id} • created ${j.createdAt?new Date(j.createdAt).toLocaleString():''}`;
+      box.value=JSON.stringify(j.spec, null, 2);
+      currentEditSpec = j.spec;
+      ensureEditSpecIds();
+      renderEditSteps();
+      refreshEditJson();
+    }catch(_){ meta.textContent='Error loading spec'; }
+  }
+  // Step-based editing state/helpers
+  let currentEditSpec=null;
+  function ensureEditSpecIds(){
+    if(!currentEditSpec) return; if(!Array.isArray(currentEditSpec.steps)) currentEditSpec.steps=[];
+    for(const s of currentEditSpec.steps){ if(!s.id) s.id=Math.random().toString(36).slice(2,10); }
+  }
+  function renderEditSteps(){
+    const c=document.getElementById('synthEditSteps'); if(!c||!currentEditSpec) return;
+    const steps=currentEditSpec.steps||[]; if(!steps.length){ c.innerHTML='<div class="muted" style="font-size:11px;">No steps yet.</div>'; return; }
+    c.innerHTML=`<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap;">
+      <button id="bulkDeleteSteps" class="btn" type="button" style="font-size:11px;padding:4px 8px;">Delete Selected</button>
+      <button id="undoEditSteps" class="btn" type="button" style="font-size:11px;padding:4px 8px;">Undo</button>
+      <span id="editValidationMsg" class="muted" style="font-size:10px;"></span>
+    </div>` + steps.map((s,i)=>{
+      const main = s.action==='goto'? (s.url||'') : (s.selector||'');
+      const extraTxt = (s.action==='type'||s.action==='asserttextcontains') ? (s.text||'') : '';
+      return `<div class="step-row" draggable="true" data-id="${s.id}" style="display:flex;align-items:center;gap:6px;padding:4px 2px;border-bottom:1px solid #1e293b;">
+        <input data-f="sel" type="checkbox" style="margin:0 2px 0 0;" />
+        <div class="drag-handle" title="Drag to reorder" style="cursor:grab;width:16px;color:#475569;">≡</div>
+        <div style="width:22px;font-size:11px;color:#64748b;">${i+1}</div>
+        <div style="flex:1; display:flex; flex-wrap:wrap; gap:4px; align-items:center;">
+          <select data-f="action" style="background:#0f172a;color:#e5e7eb;border:1px solid #334155;border-radius:4px;font-size:11px;">
+            ${['goto','click','type','waitfor','wait','asserttextcontains'].map(a=>`<option value="${a}" ${a===s.action?'selected':''}>${a}</option>`).join('')}
+          </select>
+          <input data-f="target" type="text" placeholder="selector/url" value="${escapeAttr(main)}" style="background:#0f172a;color:#e5e7eb;border:1px solid #334155;border-radius:4px;font-size:11px;padding:2px 4px;min-width:140px;" />
+          <input data-f="text" type="text" placeholder="text/value" value="${escapeAttr(extraTxt)}" style="background:#0f172a;color:#e5e7eb;border:1px solid #334155;border-radius:4px;font-size:11px;padding:2px 4px;min-width:120px;${(s.action==='type'||s.action==='asserttextcontains')?'':'display:none;'}" />
+          <input data-f="ms" type="number" placeholder="ms" value="${s.action==='wait' && s.ms? s.ms: ''}" style="background:#0f172a;color:#e5e7eb;border:1px solid #334155;border-radius:4px;font-size:11px;padding:2px 4px;width:70px;${s.action==='wait'?'':'display:none;'}" />
+          <button data-step="${s.id}" class="btn btn-sm" style="background:#1e293b;border-color:#334155;font-size:10px;padding:4px 6px;">Delete</button>
+        </div>
+        <span class="muted" style="font-size:9px;">#${s.id}</span>
+      </div>`;
+    }).join('');
+    // Delete handlers
+    c.querySelectorAll('button[data-step]').forEach(btn=> btn.addEventListener('click', async e=>{
+      const sid=btn.getAttribute('data-step');
+      if(!confirm('Delete step '+sid+'?')) return;
+  try{ const r=await fetch(`/synthetics/${editingMonitorId}/steps/${sid}`,{method:'DELETE'}); if(r.ok){ currentEditSpec.steps=currentEditSpec.steps.filter(x=>x.id!==sid); renderEditSteps(); refreshEditJson(); } }catch(_){ }
+    }));
+    // Field change handlers
+    c.querySelectorAll('.step-row').forEach(row=>{
+      const sid=row.getAttribute('data-id');
+      const select=row.querySelector('select[data-f="action"]');
+      const target=row.querySelector('input[data-f="target"]');
+      const text=row.querySelector('input[data-f="text"]');
+      const ms=row.querySelector('input[data-f="ms"]');
+      const sel=row.querySelector('input[data-f="sel"]');
+      function syncVisibility(){
+        const act=select.value;
+        if(act==='goto'){ target.placeholder='url'; }
+        else{ target.placeholder='selector'; }
+        text.style.display = (act==='type'||act==='asserttextcontains') ? '' : 'none';
+        ms.style.display = act==='wait' ? '' : 'none';
+        validateRow();
+      }
+  select.addEventListener('change',()=>{ updateStep(); syncVisibility(); });
+  target.addEventListener('input',updateStep);
+  text.addEventListener('input',updateStep);
+  ms.addEventListener('input',updateStep);
+      function updateStep(){
+        const s = currentEditSpec.steps.find(x=>x.id===sid); if(!s) return;
+        s.action=select.value;
+        delete s.url; delete s.selector; delete s.text; delete s.ms;
+        const val=target.value.trim(); if(s.action==='goto') s.url=val; else if(val) s.selector=val;
+        if((s.action==='type'||s.action==='asserttextcontains') && text.value.trim()) s.text=text.value.trim();
+        if(s.action==='wait'){ const n=parseInt(ms.value,10); if(!isNaN(n)&&n>0) s.ms=n; }
+        pushUndo();
+        validateAll();
+      }
+      function validateRow(){
+        const act=select.value; const val=target.value.trim(); let bad=false;
+        if(act==='goto' && !/^https?:\/\//i.test(val)) bad=true;
+        if((act==='click'||act==='type'||act==='waitfor') && !val) bad=true;
+        if(act==='wait' && (!ms.value || parseInt(ms.value,10)<=0)) bad=true;
+  row.style.background = bad ? 'rgba(220,38,38,0.15)' : '';
+        return !bad;
+      }
+      function validateAll(){
+        const msgEl=document.getElementById('editValidationMsg');
+        const rows=[...document.querySelectorAll('#synthEditSteps .step-row')];
+        const invalid=rows.filter(r=> r.style.background.includes('38,38,38')).length; // crude
+        msgEl.textContent = invalid? `${invalid} invalid step(s)` : '';
+      }
+      syncVisibility();
+      // Drag and drop events per row
+      row.addEventListener('dragstart',e=>{ dragId=row.getAttribute('data-id'); e.dataTransfer.effectAllowed='move'; });
+      row.addEventListener('dragover',e=>{ e.preventDefault(); row.style.background='#162132'; });
+      row.addEventListener('dragleave',()=>{ row.style.background=''; });
+      row.addEventListener('drop',async e=>{ e.preventDefault(); row.style.background=''; const targetId=row.getAttribute('data-id'); if(!dragId||dragId===targetId) return; reorderSteps(dragId,targetId); dragId=null; });
+      row.addEventListener('dragend',()=>{ dragId=null; c.querySelectorAll('.step-row').forEach(r=> r.style.background=''); });
+    });
+    // Bulk delete
+    const delBtn=document.getElementById('bulkDeleteSteps'); if(delBtn){ delBtn.onclick=async ()=>{
+      const ids=[...c.querySelectorAll('.step-row input[data-f="sel"]:checked')].map(x=> x.closest('.step-row').getAttribute('data-id'));
+      if(!ids.length) return; if(!confirm('Delete '+ids.length+' steps?')) return;
+  for(const id of ids){ try{ await fetch(`/synthetics/${editingMonitorId}/steps/${id}`,{method:'DELETE'}); }catch(_){} }
+  currentEditSpec.steps=currentEditSpec.steps.filter(s=> !ids.includes(s.id));
+  pushUndo();
+  renderEditSteps();
+  refreshEditJson();
+    }; }
+    // Undo button
+    const undoBtn=document.getElementById('undoEditSteps'); if(undoBtn){ undoBtn.onclick=()=>{ doUndo(); }; }
+  }
+  // Undo stack
+  const undoStack=[]; function pushUndo(){ try{ undoStack.push(JSON.stringify(currentEditSpec.steps)); if(undoStack.length>25) undoStack.shift(); }catch(_){ } }
+  function doUndo(){ if(!undoStack.length) return; const prev=undoStack.pop(); try{ currentEditSpec.steps=JSON.parse(prev); renderEditSteps(); }catch(_){ } }
+  // drag state
+  let dragId=null;
+  async function reorderSteps(srcId,dstId){
+    const arr=currentEditSpec.steps.slice();
+    const srcIdx=arr.findIndex(s=>s.id===srcId); const dstIdx=arr.findIndex(s=>s.id===dstId);
+    if(srcIdx===-1||dstIdx===-1) return;
+    const [m]=arr.splice(srcIdx,1); arr.splice(dstIdx,0,m);
+    try{ const r=await fetch(`/synthetics/${editingMonitorId}/steps/reorder`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ order: arr.map(s=>s.id) })}); if(r.ok){ currentEditSpec.steps=arr; renderEditSteps(); } }catch(_){ }
+  }
+  function escapeHtml(s){ return s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+  function escapeAttr(s){ return escapeHtml(String(s||'')).replace(/"/g,'&quot;'); }
+  document.getElementById('addStepBtn').addEventListener('click', async ()=>{
+    if(!editingMonitorId) return; ensureEditSpecIds();
+    const action=document.getElementById('newStepAction').value;
+    const target=document.getElementById('newStepTarget').value.trim();
+    const text=document.getElementById('newStepText').value.trim();
+    const extraRaw=document.getElementById('newStepExtra').value.trim();
+    const step={ action };
+    if(action==='goto') step.url=target; else if(target) step.selector=target;
+    if(text && (action==='type'||action==='asserttextcontains')) step.text=text;
+    if(action==='wait'){ const ms=parseInt(target||'0',10); if(ms>0) step.ms=ms; }
+    if(extraRaw){ try{ const ex=JSON.parse(extraRaw); Object.assign(step, ex); }catch(_){ alert('Invalid Extra JSON'); return; } }
+    try{
+      const r=await fetch(`/synthetics/${editingMonitorId}/steps`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ step })});
+  const j=await r.json(); if(r.ok){ currentEditSpec.steps=j.steps; renderEditSteps(); refreshEditJson(); document.getElementById('newStepTarget').value=''; document.getElementById('newStepText').value=''; document.getElementById('newStepExtra').value=''; }
+    }catch(_){ }
+  });
+  document.getElementById('toggleRawSpec').addEventListener('click',()=>{
+    const box=document.getElementById('synthEditSpec');
+    if(box.readOnly){ box.readOnly=false; box.style.opacity='1'; }
+    else {
+      try{ currentEditSpec=JSON.parse(box.value); ensureEditSpecIds(); renderEditSteps(); }catch(_){ alert('Invalid JSON'); return; }
+      box.readOnly=true; refreshEditJson();
+    }
+  });
+  function refreshEditJson(){ const box=document.getElementById('synthEditSpec'); if(!box.readOnly) return; try{ box.value=JSON.stringify(currentEditSpec,null,2); }catch(_){ } }
+  function flushInlineEdits(){
+    if(!currentEditSpec) return; const rows=[...document.querySelectorAll('#synthEditSteps .step-row')];
+    const byId=new Map(currentEditSpec.steps.map(s=>[s.id,s]));
+    for(const row of rows){
+      const sid=row.getAttribute('data-id'); const s=byId.get(sid); if(!s) continue;
+      const act=row.querySelector('select[data-f="action"]').value;
+      const target=row.querySelector('input[data-f="target"]').value.trim();
+      const text=row.querySelector('input[data-f="text"]').value.trim();
+      const ms=row.querySelector('input[data-f="ms"]').value.trim();
+      s.action=act; delete s.url; delete s.selector; delete s.text; delete s.ms;
+      if(act==='goto') s.url=target; else if(target) s.selector=target;
+      if((act==='type'||act==='asserttextcontains') && text) s.text=text;
+      if(act==='wait'){ const n=parseInt(ms,10); if(!isNaN(n)&&n>0) s.ms=n; }
+    }
+  }
+  async function saveEdit(){
+    if(!editingMonitorId) return;
+    const msg=document.getElementById('synthEditMsg');
+    msg.textContent='Saving…';
+    try{
+  flushInlineEdits();
+  const box=document.getElementById('synthEditSpec');
+  let spec;
+  // Always build from currentEditSpec (represents latest inline edits). If raw editor in edit mode, merge its changes first.
+  if(!box.readOnly){ try { currentEditSpec = JSON.parse(box.value); ensureEditSpecIds(); } catch(_){ msg.textContent='Invalid JSON'; return; } }
+  spec = currentEditSpec;
+      const r=await fetch(`/synthetics/${editingMonitorId}`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({ spec })});
+      const j=await r.json();
+      if(!r.ok){ msg.textContent='Save failed: '+(j.error||r.status); return; }
+      currentEditSpec = j.spec || spec;
+      renderEditSteps(); refreshEditJson();
+      msg.textContent='Saved'; setTimeout(()=>{msg.textContent='';},1200);
+      loadSynthMonitors();
+    }catch(_){ msg.textContent='Error'; }
+  }
+  editModal.querySelector('#synthEditSave').addEventListener('click',saveEdit);
+  // Delete
+  editModal.querySelector('#synthEditDelete').addEventListener('click', async ()=>{
+    if(!editingMonitorId) return;
+    if(!confirm('Delete this synthetic monitor and its runs?')) return;
+    const msg=document.getElementById('synthEditMsg'); msg.textContent='Deleting…';
+    try{ const r=await fetch(`/synthetics/${editingMonitorId}`,{method:'DELETE'}); if(!r.ok){ msg.textContent='Delete failed'; return; } msg.textContent='Deleted'; loadSynthMonitors(); closeEdit(); }catch(_){ msg.textContent='Error'; }
+  });
+  // AI Assist drafting
+  const draftBtnId = '#synthEditDraft';
+  editModal.querySelector(draftBtnId).addEventListener('click', async ()=>{
+    const promptEl=document.getElementById('synthEditPrompt');
+    const baseSpecEl=document.getElementById('synthEditSpec');
+    const msg=document.getElementById('synthEditMsg');
+    const prompt=promptEl.value.trim(); if(!prompt){ msg.textContent='Prompt empty'; return; }
+    msg.textContent='Drafting…';
+    try{
+      const r=await fetch('/synthetics/draft',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ prompt })});
+      const j=await r.json();
+      if(!r.ok){ msg.textContent='Draft failed'; return; }
+      const draft=(j||{}).spec; if(!draft){ msg.textContent='No draft'; return; }
+      document.getElementById('synthDraftContainer').style.display='block';
+      document.getElementById('synthDraftSpec').value=JSON.stringify(draft,null,2);
+      msg.textContent='Draft ready';
+    }catch(_){ msg.textContent='Draft error'; }
+  });
+  function mergeSpecs(baseObj, draftObj){
+    const merged = { ...baseObj, ...draftObj };
+    const seen = new Set();
+    const key = s=>`${s.action||''}::${s.selector||''}::${s.url||''}`;
+    const steps=[];
+    (baseObj.steps||[]).forEach(s=>{ const k=key(s); seen.add(k); steps.push(s); });
+    (draftObj.steps||[]).forEach(s=>{ const k=key(s); if(!seen.has(k)){ seen.add(k); steps.push(s); } });
+    merged.steps=steps;
+    return merged;
+  }
+  function diffSpecs(oldSpec, newSpec){
+    const o = JSON.stringify(oldSpec, null, 2).split(/\n/);
+    const n = JSON.stringify(newSpec, null, 2).split(/\n/);
+    const max = Math.max(o.length,n.length);
+    const lines=[];
+    for(let i=0;i<max;i++){
+      const a=o[i]; const b=n[i];
+      if(a===b) lines.push('  '+(a||''));
+      else {
+        if(a!==undefined) lines.push('- '+a);
+        if(b!==undefined) lines.push('+ '+b);
+      }
+    }
+    return lines.join('\n');
+  }
+  editModal.querySelector('#synthDraftMerge').addEventListener('click',()=>{
+    try{
+      const base=JSON.parse(document.getElementById('synthEditSpec').value);
+      const draft=JSON.parse(document.getElementById('synthDraftSpec').value);
+  const merged=mergeSpecs(base,draft);
+  const diff=diffSpecs(base, merged);
+  const box=document.getElementById('synthEditSpec');
+  box.value=JSON.stringify(merged,null,2);
+  // show diff inline in message temporarily
+  const msg=document.getElementById('synthEditMsg');
+  msg.textContent='Merged';
+  const diffPanel=document.getElementById('synthDiffPanel');
+  const diffText=document.getElementById('synthDiffText');
+  if(diffPanel && diffText){ diffText.textContent=diff; diffPanel.style.display='block'; }
+    }catch(_){ document.getElementById('synthEditMsg').textContent='Merge failed'; }
+  });
+  editModal.querySelector('#synthDraftReplace').addEventListener('click',()=>{
+  try{ const draft=JSON.parse(document.getElementById('synthDraftSpec').value); const base=JSON.parse(document.getElementById('synthEditSpec').value); document.getElementById('synthEditSpec').value=JSON.stringify(draft,null,2); const diffPanel=document.getElementById('synthDiffPanel'); const diffText=document.getElementById('synthDiffText'); if(diffPanel&&diffText){ diffText.textContent=diffSpecs(base,draft); diffPanel.style.display='block'; } }catch(_){ document.getElementById('synthEditMsg').textContent='Replace failed'; }
+  });
+  editModal.querySelector('#synthDraftDiscard').addEventListener('click',()=>{
+    document.getElementById('synthDraftContainer').style.display='none';
+    document.getElementById('synthDraftSpec').value='';
+    const diffPanel=document.getElementById('synthDiffPanel'); if(diffPanel) diffPanel.style.display='none';
+    const stepsDiv=document.getElementById('synthDraftSteps'); if(stepsDiv) { stepsDiv.style.display='none'; stepsDiv.innerHTML=''; }
+  });
+  const diffHideBtn=()=>{ const diffPanel=document.getElementById('synthDiffPanel'); if(diffPanel) diffPanel.style.display='none'; };
+  document.addEventListener('click',e=>{ if(e.target && e.target.id==='synthDiffHide') diffHideBtn(); });
+  function renderDraftSteps(draft){
+    const stepsDiv=document.getElementById('synthDraftSteps'); if(!stepsDiv) return;
+    if(!draft || !Array.isArray(draft.steps)){ stepsDiv.style.display='none'; stepsDiv.innerHTML=''; return; }
+    stepsDiv.style.display='block';
+    const baseSpecText=document.getElementById('synthEditSpec').value;
+    let baseSpec={}; try{ baseSpec=JSON.parse(baseSpecText);}catch(_){ }
+    const existingKeys=new Set((baseSpec.steps||[]).map(s=>`${s.action||''}::${s.selector||''}::${s.url||''}`));
+    stepsDiv.innerHTML='<div style="font-weight:600;margin-bottom:4px;">Select Draft Steps to Merge</div>';
+    draft.steps.forEach((s,i)=>{
+      const k=`${s.action||''}::${s.selector||''}::${s.url||''}`;
+      const checked = !existingKeys.has(k);
+      const row=document.createElement('label');
+      row.style.cssText='display:flex;align-items:center;gap:6px;margin-bottom:2px;';
+      row.innerHTML=`<input type='checkbox' data-draft-step='${i}' ${checked?'checked':''}/> <code style='font-size:11px;'>${s.action}${s.selector? ' '+s.selector: (s.url? ' '+s.url: '')}</code>`;
+      stepsDiv.appendChild(row);
+    });
+    // Custom merge honoring selection
+    const mergeBtn=document.createElement('button');
+    mergeBtn.textContent='Merge Selected';
+    mergeBtn.className='btn';
+    mergeBtn.style.marginTop='4px';
+    mergeBtn.addEventListener('click',()=>{
+      try{
+        const base=JSON.parse(document.getElementById('synthEditSpec').value);
+        const selectedIdx=[...stepsDiv.querySelectorAll('input[data-draft-step]:checked')].map(x=>Number(x.getAttribute('data-draft-step')));
+        const selectedSteps=(draft.steps||[]).filter((_,i)=>selectedIdx.includes(i));
+        const merged={ ...base };
+        merged.steps=[...(base.steps||[])];
+        const seen=new Set((merged.steps||[]).map(s=>`${s.action||''}::${s.selector||''}::${s.url||''}`));
+        selectedSteps.forEach(s=>{ const key=`${s.action||''}::${s.selector||''}::${s.url||''}`; if(!seen.has(key)){ seen.add(key); merged.steps.push(s); }});
+        const diffPanel=document.getElementById('synthDiffPanel'); const diffText=document.getElementById('synthDiffText');
+        const old=base; const newSpec=merged; document.getElementById('synthEditSpec').value=JSON.stringify(newSpec,null,2);
+        if(diffPanel&&diffText){ diffText.textContent=diffSpecs(old,newSpec); diffPanel.style.display='block'; }
+      }catch(_){ document.getElementById('synthEditMsg').textContent='Selective merge failed'; }
+    });
+    stepsDiv.appendChild(mergeBtn);
+  }
+  // Hook drafting to show step selection
+  const draftBtn=document.getElementById('synthEditDraft');
+  if(draftBtn){
+    draftBtn.addEventListener('click',()=>{
+      setTimeout(()=>{ try{ const d=JSON.parse(document.getElementById('synthDraftSpec').value); renderDraftSteps(d);}catch(_){ } },400);
+    });
+  }
+  // Partial patch application: user selects subset of draft JSON lines starting with + or content
+  // (Simplified approach: parse both and only carry over steps from draft not present in base)
+  // Already covered by mergeSpecs; could extend later.
+
+  // Run detail modal
+  const runModal=document.createElement('div');
+  runModal.id='synthRunModal';
+  runModal.style.cssText='display:none;position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:9999;align-items:center;justify-content:center';
+  runModal.innerHTML=`<div style="background:#0b0f14;border:1px solid #243244;border-radius:10px;padding:14px;width:min(720px,92vw);max-height:90vh;overflow:auto;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+      <div style="font-weight:600;">Run Details</div>
+      <button class="btn" id="synthRunClose" type="button">Close</button>
+    </div>
+    <div id="synthRunMeta" class="muted" style="font-size:12px;margin-bottom:6px;"></div>
+    <pre id="synthRunLogs" style="background:#111827;border:1px solid #243244;padding:8px;border-radius:6px;font-size:11px;white-space:pre-wrap;max-height:50vh;overflow:auto;">Loading…</pre>
+    <div id="synthRunShot" style="margin-top:8px;"></div>
+  </div>`;
+  document.body.appendChild(runModal);
+  function closeRun(){runModal.style.display='none';}
+  runModal.addEventListener('click',e=>{if(e.target===runModal) closeRun();});
+  runModal.querySelector('#synthRunClose').addEventListener('click',closeRun);
+  function openRunDetail(data){
+    runModal.style.display='flex';
+    const meta=runModal.querySelector('#synthRunMeta');
+    const logsEl=runModal.querySelector('#synthRunLogs');
+    const shot=runModal.querySelector('#synthRunShot');
+    meta.textContent=`Run #${data.id} • Monitor #${data.monitorId} • ${data.ok?'OK':'Fail '+(data.statusText||'')}`;
+  const stepLines=(data.steps||[]).map((s,i)=>`#${i+1} ${s.action}${s.selector? ' '+s.selector: (s.url? ' '+s.url:'')} ${s.ok?'✓':'✗'} ${s.ms!=null? '('+s.ms+'ms)':''}${s.error? ' – '+s.error:''}`);
+  const logLines=(data.logs||[]).map(l=>`${new Date(l.ts).toISOString()} ${l.msg}`);
+  logsEl.textContent=[ 'Steps:', ...stepLines, '', 'Logs:', ...logLines ].join('\n') || '(no logs)';
+    shot.innerHTML='';
+    if(data.screenshot){ const img=document.createElement('img'); img.src=data.screenshot; img.alt='screenshot'; img.style.maxWidth='100%'; img.style.border='1px solid #243244'; img.style.borderRadius='6px'; shot.appendChild(img); }
+  }
+  window.openRunDetail=openRunDetail; // expose for earlier listeners
+  window.openEditMonitor=openEditMonitor;
     </script>
   </body>
 </html>

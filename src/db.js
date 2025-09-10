@@ -92,6 +92,118 @@ export function ensureLogsSchema(db) {
   db.exec('CREATE INDEX IF NOT EXISTS idx_logs_ep_ts ON logs_raw(endpoint, ts);');
 }
 
+// ===== Synthetics schema and helpers =====
+export function ensureSynthSchema(db) {
+  db.exec(`CREATE TABLE IF NOT EXISTS synth_monitors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    spec TEXT NOT NULL,
+    schedule TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );`);
+  // Soft delete column (idempotent)
+  try { db.exec('ALTER TABLE synth_monitors ADD COLUMN deleted INTEGER DEFAULT 0'); } catch (_) { /* ignore */ }
+  db.exec(`CREATE TABLE IF NOT EXISTS synth_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    monitor_id INTEGER NOT NULL,
+    started_at INTEGER NOT NULL,
+    finished_at INTEGER,
+    ok INTEGER,
+    status_text TEXT,
+    screenshot TEXT,
+    logs TEXT,
+    steps TEXT,
+    FOREIGN KEY(monitor_id) REFERENCES synth_monitors(id)
+  );`);
+  // Attempt to add new column (ignore if exists)
+  try { db.exec('ALTER TABLE synth_runs ADD COLUMN steps TEXT'); } catch(_) { }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_synth_runs_monitor_time ON synth_runs(monitor_id, started_at DESC);');
+}
+
+export function insertSynthMonitor(db, { name, spec, schedule, createdAt }) {
+  const stmt = db.prepare(`INSERT INTO synth_monitors (name, spec, schedule, created_at, deleted) VALUES (@name, @spec, @schedule, @createdAt, 0)`);
+  const info = stmt.run({ name, spec: JSON.stringify(spec), schedule, createdAt });
+  return info.lastInsertRowid;
+}
+
+export function listSynthMonitors(db) {
+  const rows = db.prepare(`SELECT id, name, schedule, created_at as createdAt, COALESCE(deleted,0) as deleted FROM synth_monitors ORDER BY id DESC`).all();
+  return rows;
+}
+
+export function updateSynthSchedule(db, id, schedule) {
+  db.prepare(`UPDATE synth_monitors SET schedule=@schedule WHERE id=@id`).run({ id, schedule });
+}
+
+export function updateSynthMonitorSpec(db, id, spec, schedule) {
+  // Also update name if present inside spec
+  let name = null;
+  try { if (spec && typeof spec === 'object' && spec.name) name = String(spec.name); } catch(_){}
+  if (name) {
+    db.prepare(`UPDATE synth_monitors SET name=@name, spec=@spec, schedule=@schedule WHERE id=@id`).run({ id, name, spec: JSON.stringify(spec), schedule });
+  } else {
+    db.prepare(`UPDATE synth_monitors SET spec=@spec, schedule=@schedule WHERE id=@id`).run({ id, spec: JSON.stringify(spec), schedule });
+  }
+}
+
+export function getSynthMonitor(db, id) {
+  const row = db.prepare(`SELECT id, name, spec, schedule, created_at as createdAt, COALESCE(deleted,0) as deleted FROM synth_monitors WHERE id=@id`).get({ id });
+  if (!row) return null;
+  try { row.spec = JSON.parse(row.spec); } catch { row.spec = null; }
+  return row;
+}
+
+export function deleteSynthMonitor(db, id) {
+  const delRuns = db.prepare(`DELETE FROM synth_runs WHERE monitor_id=@id`);
+  const delMon = db.prepare(`DELETE FROM synth_monitors WHERE id=@id`);
+  const trx = db.transaction((idVal)=>{ delRuns.run({ id: idVal }); delMon.run({ id: idVal }); });
+  trx(id);
+}
+
+export function softDeleteSynthMonitor(db, id) {
+  db.prepare('UPDATE synth_monitors SET deleted=1 WHERE id=@id').run({ id });
+}
+
+export function restoreSynthMonitor(db, id) {
+  db.prepare('UPDATE synth_monitors SET deleted=0 WHERE id=@id').run({ id });
+}
+
+export function insertSynthRun(db, run) {
+  // If an id is provided, try to insert using that id for consistency with in-memory IDs
+  if (run.id != null) {
+    const stmtWithId = db.prepare(`INSERT INTO synth_runs (id, monitor_id, started_at, finished_at, ok, status_text, screenshot, logs, steps) VALUES (@id, @monitorId, @startedAt, @finishedAt, @ok, @statusText, @screenshot, @logs, @steps)`);
+    try {
+      const info = stmtWithId.run({ ...run, ok: run.ok ? 1 : 0, logs: JSON.stringify(run.logs || []), steps: JSON.stringify(run.steps || []) });
+      return info.lastInsertRowid;
+    } catch (e) {
+      // Fallback: insert without explicit id (in case of conflict with existing ids)
+    }
+  }
+  const stmt = db.prepare(`INSERT INTO synth_runs (monitor_id, started_at, finished_at, ok, status_text, screenshot, logs, steps) VALUES (@monitorId, @startedAt, @finishedAt, @ok, @statusText, @screenshot, @logs, @steps)`);
+  const info = stmt.run({ ...run, ok: run.ok ? 1 : 0, logs: JSON.stringify(run.logs || []), steps: JSON.stringify(run.steps || []) });
+  return info.lastInsertRowid;
+}
+
+export function getSynthRun(db, id) {
+  const r = db.prepare(`SELECT id, monitor_id as monitorId, started_at as startedAt, finished_at as finishedAt, ok, status_text as statusText, screenshot, logs, steps FROM synth_runs WHERE id=@id`).get({ id });
+  if (!r) return null;
+  return { ...r, ok: !!r.ok, logs: safeParseJson(r.logs, []), steps: safeParseJson(r.steps, []) };
+}
+
+export function listSynthRuns(db, limit = 50) {
+  const rows = db.prepare(`SELECT id, monitor_id as monitorId, started_at as startedAt, finished_at as finishedAt, ok, status_text as statusText, screenshot, logs, steps FROM synth_runs ORDER BY started_at DESC LIMIT @limit`).all({ limit });
+  return rows.map(r => ({ ...r, ok: !!r.ok, logs: safeParseJson(r.logs, []), steps: safeParseJson(r.steps, []) }));
+}
+
+export function getLastRunForMonitor(db, monitorId) {
+  const r = db.prepare(`SELECT id, started_at as startedAt, finished_at as finishedAt, ok, status_text as statusText FROM synth_runs WHERE monitor_id=@monitorId ORDER BY started_at DESC LIMIT 1`).get({ monitorId });
+  if (!r) return null; return { ...r, ok: !!r.ok };
+}
+
+function safeParseJson(s, defVal) {
+  try { return JSON.parse(s); } catch { return defVal; }
+}
+
 export function insertLogs(db, logs) {
   if (!logs || !logs.length) return [];
   const insert = db.prepare(`

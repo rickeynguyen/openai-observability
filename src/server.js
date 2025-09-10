@@ -25,6 +25,8 @@ if (process.env.NODE_ENV !== 'test' && enableDb) {
     if ((process.env.ENABLE_AI === '1' || process.env.ENABLE_AI === 'true') && dbMod.ensureLogsSchema) {
       try { dbMod.ensureLogsSchema(db); } catch(e) { console.warn('[db] logs schema init failed', e.message); }
     }
+  // Ensure synthetics schema
+  try { dbMod.ensureSynthSchema?.(db); } catch(e) { console.warn('[db] synth schema init failed', e.message); }
     console.log('[db] sqlite ready');
   } catch (e) {
     console.warn('[db] sqlite init failed', e.message);
@@ -341,25 +343,71 @@ const synthMonitors = [];
 const synthRuns = [];
 let synthNextId = 1;
 let synthRunNextId = 1;
+const SCHEDULE_MINUTES = { manual:0, every_1m:1, every_5m:5, every_10m:10, every_15m:15, every_30m:30, hourly:60 };
+const synthScheduleState = new Map(); // id -> { nextDueAt:number }
+const synthRunning = new Set();
+
+// Small helpers to guard dynamic imports usage so earlier code referring to db.getSynthMonitor doesn't break
+// (Original code tried db.getSynthMonitor which was undefined; we now centralize access.)
+async function loadDbFns(){
+  if (!db) return {};
+  try { return await import('./db.js'); } catch { return {}; }
+}
 
 function normalizeSynthSpec(spec){
+  // sanitize schedule
+  const schedRaw = String(spec?.schedule || 'manual').toLowerCase();
+  const schedule = Object.prototype.hasOwnProperty.call(SCHEDULE_MINUTES, schedRaw) ? schedRaw : 'manual';
   const out = {
     name: String(spec?.name || 'Synthetic Monitor'),
-    schedule: spec?.schedule || 'manual',
+    schedule,
     startUrl: String(spec?.startUrl || spec?.url || ''),
     timeoutMs: Number(spec?.timeoutMs || 30000),
-    steps: Array.isArray(spec?.steps) ? spec.steps : []
+    steps: Array.isArray(spec?.steps) ? spec.steps : [],
+    auth: spec?.auth && typeof spec.auth === 'object' ? {
+      headers: (spec.auth.headers && typeof spec.auth.headers === 'object') ? spec.auth.headers : undefined,
+      cookies: Array.isArray(spec.auth.cookies) ? spec.auth.cookies.map(c=>({
+        name: String(c?.name||''),
+        value: String(c?.value||''),
+        domain: c?.domain ? String(c.domain) : undefined,
+        path: c?.path ? String(c.path) : undefined,
+        httpOnly: !!c?.httpOnly,
+        secure: !!c?.secure,
+        sameSite: c?.sameSite ? String(c.sameSite) : undefined
+      })).filter(x=>x.name && x.value) : undefined
+    } : undefined
   };
-  out.steps = out.steps.map(s=>({
-    action: String(s?.action||'').toLowerCase(),
-    url: s?.url ? String(s.url) : undefined,
-    selector: s?.selector ? String(s.selector) : undefined,
-    text: s?.text != null ? String(s.text) : undefined,
-    enter: s?.enter ? true : false,
-    timeoutMs: s?.timeoutMs!=null ? Number(s.timeoutMs) : undefined,
-    any: s?.any ? true : false
-  })).filter(s=>s.action);
+  // Trim accidental trailing period in URL (common copy/paste typo -> 403 / DNS issues)
+  if (out.startUrl && out.startUrl.endsWith('.')) out.startUrl = out.startUrl.slice(0,-1);
+  out.steps = out.steps.map(s=>{
+    const step = {
+      action: String(s?.action||'').toLowerCase(),
+      url: s?.url ? String(s.url) : undefined,
+      selector: s?.selector ? String(s.selector) : undefined,
+      text: s?.text != null ? String(s.text) : undefined,
+      enter: s?.enter ? true : false,
+      timeoutMs: s?.timeoutMs!=null ? Number(s.timeoutMs) : undefined,
+      any: s?.any ? true : false,
+      ms: s?.ms!=null ? Number(s.ms) : undefined,
+      soft: s?.soft ? true : false,
+      pollMs: s?.pollMs!=null ? Number(s.pollMs) : undefined,
+      retryMs: s?.retryMs!=null ? Number(s.retryMs) : undefined,
+      id: s?.id ? String(s.id) : undefined
+    };
+    // Preserve any additional custom keys (future-proof) except ones we already set / sanitized
+    for(const k of Object.keys(s||{})) if(!(k in step)) step[k]=s[k];
+    return step;
+  }).filter(s=>s.action);
   return out;
+}
+
+function ensureStepIds(spec){
+  try{
+    if (spec && Array.isArray(spec.steps)) {
+      for (const s of spec.steps) { if (!s.id) s.id = Math.random().toString(36).slice(2,10); }
+    }
+  }catch(_){ }
+  return spec;
 }
 
 async function ensureSynthDir(){
@@ -377,7 +425,7 @@ app.post('/synthetics/draft', async (req, res) => {
     if (!process.env.OPENAI_API_KEY) return res.status(400).json({ error:'OPENAI_API_KEY required for drafting' });
     const sys = `You are a test designer that outputs ONLY JSON for a headless browser synthetic test DSL. No prose. The JSON schema:\n{
   "name": string,
-  "schedule": "manual" | "every_5m" | "every_15m" | "hourly",
+  "schedule": "manual" | "every_1m" | "every_5m" | "every_10m" | "every_15m" | "every_30m" | "hourly",
   "startUrl": string,
   "timeoutMs": number,
   "steps": Array<{
@@ -388,8 +436,12 @@ app.post('/synthetics/draft', async (req, res) => {
     enter?: boolean,
     timeoutMs?: number,
     any?: boolean
-  }>
-}\nRules: Prefer robust CSS selectors (textarea, input[type=\"text\"], button, [role=\"button\"], etc). For \"type\", include selector and text. If pressing enter is needed, set enter: true. For assertions, include a broad selector like \"body\". Output ONLY the JSON.`;
+  }>,
+  "auth"?: {
+    headers?: { [key: string]: string },
+    cookies?: Array<{ name: string, value: string, domain?: string, path?: string, httpOnly?: boolean, secure?: boolean, sameSite?: "Lax"|"Strict"|"None" }>
+  }
+}\nRules: Prefer robust CSS selectors (textarea, input[type=\"text\"], button, [role=\"button\"], etc). For \"type\", include selector and text. If pressing enter is needed, set enter: true. For assertions, include a broad selector like \"body\". If a site requires login, you may include simple cookie-based auth in the auth.cookies array. Output ONLY the JSON.`;
     const user = `Create a synthetic test for: ${prompt}`;
     const r = await fetch('https://api.openai.com/v1/responses', {
       method:'POST', headers:{ 'Content-Type':'application/json','Authorization':`Bearer ${process.env.OPENAI_API_KEY}` },
@@ -408,7 +460,7 @@ app.post('/synthetics/draft', async (req, res) => {
       const url = urlMatch ? urlMatch[0] : 'https://example.com';
       specObj = { name:'Synthetic Test', schedule:'manual', startUrl:url, timeoutMs:20000, steps:[ { action:'goto', url }, { action:'assertTextContains', selector:'body', text:'', any:true } ] };
     }
-    const spec = normalizeSynthSpec(specObj);
+  const spec = normalizeSynthSpec(specObj);
     res.json({ spec });
   }catch(e){ res.status(500).json({ error:String(e?.message||e) }); }
 });
@@ -417,87 +469,500 @@ app.post('/synthetics/draft', async (req, res) => {
 app.post('/synthetics', async (req,res)=>{
   noStore(res);
   try{
-    const spec = normalizeSynthSpec(req.body?.spec||{});
+  let spec = normalizeSynthSpec(req.body?.spec||{}); ensureStepIds(spec);
     if(!spec.startUrl && !spec.steps.some(s=>s.action==='goto' && s.url)) return res.status(400).json({ error:'startUrl or first goto step required' });
     const id = synthNextId++;
     const m = { id, name: spec.name || `Monitor ${id}`, spec, createdAt: Date.now() };
+    // Persist if DB available
+    if (db) {
+      try { const { insertSynthMonitor } = await import('./db.js'); const rid = insertSynthMonitor(db, { name: m.name, spec: m.spec, schedule: m.spec.schedule, createdAt: m.createdAt }); if (typeof rid === 'number') m.id = rid; } catch(e){ console.warn('[synth] save monitor failed', e.message); }
+    }
     synthMonitors.push(m);
+    // seed schedule state
+    try{
+      const mins = SCHEDULE_MINUTES[m.spec.schedule] || 0; if (mins>0) synthScheduleState.set(m.id, { nextDueAt: Date.now() + mins*60000 });
+    }catch(_){ }
     res.json({ id, monitor: m });
   }catch(e){ res.status(500).json({ error:String(e?.message||e) }); }
 });
 
 // List monitors
-app.get('/synthetics', (req,res)=>{
+app.get('/synthetics', async (req,res)=>{
   noStore(res);
-  res.json({ items: synthMonitors.map(m=>({ id:m.id, name:m.name, createdAt:m.createdAt })) });
+  try{
+    if (db) {
+  const { listSynthMonitors, getLastRunForMonitor } = await import('./db.js');
+      const rows = listSynthMonitors(db);
+  const showDeleted = req.query && String(req.query.deleted)==='1';
+  const items = rows.filter(r=> showDeleted || !r.deleted).map(r=>{
+        const last = getLastRunForMonitor(db, r.id);
+        const mins = SCHEDULE_MINUTES[r.schedule] || 0;
+        let nextDueAt = null;
+        if (mins>0) {
+          const state = synthScheduleState.get(r.id);
+          if (state && state.nextDueAt) nextDueAt = state.nextDueAt;
+          else {
+            const seed = (last?.startedAt) || r.createdAt;
+            nextDueAt = (seed||Date.now()) + mins*60000;
+          }
+        }
+        // If spec has a more recent name (in-memory), reflect it
+        let displayName = r.name;
+        try {
+          const mem = synthMonitors.find(m=>m.id===r.id);
+          if (mem && mem.spec && mem.spec.name) displayName = mem.spec.name;
+        } catch(_){}
+        return {
+          id: r.id,
+          name: displayName,
+          schedule: r.schedule,
+          createdAt: r.createdAt,
+          deleted: !!r.deleted,
+          lastRun: last ? { startedAt: last.startedAt, ok: !!last.ok, statusText: last.statusText||'' } : null,
+          nextDueAt
+        };
+      });
+      return res.json({ items });
+    }
+  }catch(_){ }
+  // In-memory fallback
+  const items = synthMonitors.map(m=>{
+    const schedule = m.spec?.schedule || 'manual';
+    const mins = SCHEDULE_MINUTES[schedule] || 0;
+    const last = synthRuns.find(r=>r.monitorId===m.id) || null;
+    let nextDueAt = null;
+    if (mins>0) {
+      const state = synthScheduleState.get(m.id);
+      if (state && state.nextDueAt) nextDueAt = state.nextDueAt;
+      else {
+        const seed = (last?.startedAt) || m.createdAt;
+        nextDueAt = (seed||Date.now()) + mins*60000;
+      }
+    }
+    return { id: m.id, name: m.name, createdAt: m.createdAt, schedule, lastRun: last? { startedAt: last.startedAt, ok: !!last.ok, statusText: last.statusText||'' } : null, nextDueAt };
+  });
+  res.json({ items });
 });
 
-// Run a monitor once
-app.post('/synthetics/:id/run', async (req,res)=>{
+// Update schedule
+app.patch('/synthetics/:id/schedule', async (req, res)=>{
   noStore(res);
   try{
     const id = Number(req.params.id);
-    const m = synthMonitors.find(x=>x.id===id);
-    if(!m) return res.status(404).json({ error:'not_found' });
-    const runId = synthRunNextId++;
-    const startedAt = Date.now();
-    const result = await runSyntheticMonitor(m.spec, runId);
-    const rec = { id: runId, monitorId: id, startedAt, finishedAt: Date.now(), ok: !!result.ok, statusText: result.statusText||'', screenshot: result.screenshot||null, logs: result.logs||[] };
-    synthRuns.unshift(rec);
-    res.json(rec);
+  let m = synthMonitors.find(x=>x.id===id);
+  if(!m && db){ try { const { getSynthMonitor } = await import('./db.js'); const row = getSynthMonitor(db, id); if(row){ m = { id: row.id, name: row.name, spec: row.spec, createdAt: row.createdAt }; synthMonitors.push(m); } } catch(_){ } }
+  if(!m) return res.status(404).json({ error:'not_found' });
+    const schedRaw = String(req.body?.schedule||'').toLowerCase();
+    if (!Object.prototype.hasOwnProperty.call(SCHEDULE_MINUTES, schedRaw)) return res.status(400).json({ error:'invalid_schedule' });
+    m.spec.schedule = schedRaw;
+  if (db){ try { const { updateSynthSchedule } = await import('./db.js'); updateSynthSchedule(db, id, schedRaw); } catch(_){ } }
+    const mins = SCHEDULE_MINUTES[schedRaw] || 0;
+    let nextDueAt = null;
+    if (mins>0) {
+      // Force immediate run then schedule next interval
+      const now = Date.now();
+      const state = { nextDueAt: now }; // will trigger immediate run via manual invocation below
+      synthScheduleState.set(m.id, state);
+      nextDueAt = state.nextDueAt;
+      // Kick off run asynchronously (do not await to keep API snappy)
+      (async ()=>{
+        if (synthRunning.has(m.id)) return;
+        synthRunning.add(m.id);
+        try{
+          const runId = synthRunNextId++;
+          const startedAt = Date.now();
+          const result = await runSyntheticMonitor(m.spec, runId);
+          const rec = { id: runId, monitorId: m.id, startedAt, finishedAt: Date.now(), ok: !!result.ok, statusText: result.statusText||'', screenshot: result.screenshot||null, logs: result.logs||[], steps: result.steps||[] };
+          synthRuns.unshift(rec);
+          if (db){ try { const { insertSynthRun } = await import('./db.js'); insertSynthRun(db, rec); } catch(_){ } }
+          // schedule subsequent run
+          const mins2 = SCHEDULE_MINUTES[m.spec.schedule] || 0;
+          if (mins2>0) synthScheduleState.set(m.id, { nextDueAt: Date.now() + mins2*60000 });
+        }catch(e){
+          const runId = synthRunNextId++;
+          const rec = { id: runId, monitorId: m.id, startedAt: Date.now(), finishedAt: Date.now(), ok:false, statusText:'immediate_failed', screenshot:null, logs:[{ ts: Date.now(), msg: String(e?.message||e) }], steps: [] };
+          synthRuns.unshift(rec);
+          if (db){ try { const { insertSynthRun } = await import('./db.js'); insertSynthRun(db, rec); } catch(_){ } }
+        } finally { synthRunning.delete(m.id); }
+      })();
+    } else {
+      synthScheduleState.delete(m.id);
+    }
+    res.json({ id:m.id, schedule: m.spec.schedule, nextDueAt });
   }catch(e){ res.status(500).json({ error:String(e?.message||e) }); }
 });
 
-// List runs
-app.get('/synthetics/runs', (req,res)=>{
+// Run a monitor once
+// Replace entire monitor (name/spec) including steps (ids assigned if missing)
+app.put('/synthetics/:id(\\d+)', async (req,res)=>{
+  try {
+    const id = Number(req.params.id);
+    // Load from memory or DB
+    let current = synthMonitors.find(m=>m.id===id);
+    if(!current && db){
+      try { const { getSynthMonitor } = await import('./db.js'); const row = getSynthMonitor(db, id); if(row){ current = { id: row.id, name: row.name, spec: row.spec, createdAt: row.createdAt }; synthMonitors.push(current); } } catch(_){ }
+    }
+    if(!current) return res.status(404).json({error:'not found'});
+    let spec = normalizeSynthSpec(req.body?.spec||{}); ensureStepIds(spec);
+    // Try to preserve IDs for structurally same steps by action+selector+url ordering
+    const prevByKey = new Map();
+  for(const s of (current.spec?.steps||[])) prevByKey.set(`${s.action}|${s.selector||''}|${s.url||''}`, s.id);
+    for(const s of (spec.steps||[])) if(!s.id){
+      const key = `${s.action}|${s.selector||''}|${s.url||''}`;
+      if(prevByKey.has(key)) s.id = prevByKey.get(key);
+    }
+    ensureStepIds(spec);
+    current.name = req.body.name ?? current.name;
+    current.spec = spec;
+    if (db){
+      try { const { updateSynthMonitorSpec } = await import('./db.js'); updateSynthMonitorSpec(db, id, current.spec, current.spec.schedule); } catch(e){ console.warn('[synth] db update failed', e.message); }
+    }
+    res.json({ id, name: current.name, spec: current.spec });
+  } catch(e){ console.error(e); res.status(500).json({error:'update failed', detail: String(e?.message||e)}); }
+});
+
+// Add a step (or steps) at end or at given index
+app.post('/synthetics/:id(\\d+)/steps', async (req,res)=>{
+  try {
+    const id = Number(req.params.id);
+  let current = synthMonitors.find(m=>m.id===id);
+  if(!current && db){ try { const { getSynthMonitor } = await import('./db.js'); const row = getSynthMonitor(db, id); if(row){ current = { id: row.id, name: row.name, spec: row.spec, createdAt: row.createdAt }; synthMonitors.push(current); } } catch(_){ } }
+  if(!current) return res.status(404).json({error:'not found'});
+    const body = req.body || {};
+    const stepsToAdd = Array.isArray(body.steps) ? body.steps : [body.step];
+    if(!stepsToAdd || !stepsToAdd.length) return res.status(400).json({error:'no steps'});
+    const index = typeof body.index==='number'? body.index : current.spec.steps.length;
+    const newSteps = [...(current.spec.steps||[])];
+    for(const raw of stepsToAdd){
+      const step = normalizeSynthSpec({steps:[raw]}).steps[0];
+      ensureStepIds({steps:[step]});
+      newSteps.splice(Math.min(index, newSteps.length),0, step);
+    }
+    current.spec.steps = newSteps;
+  if (db){ try { const { updateSynthMonitorSpec } = await import('./db.js'); updateSynthMonitorSpec(db, id, current.spec, current.spec.schedule); } catch(e){ console.warn('[synth] db add-step update failed', e.message); } }
+    res.json({ id, steps: newSteps });
+  } catch(e){ console.error(e); res.status(500).json({error:'add step failed'}); }
+});
+
+// Delete a single step by id
+app.delete('/synthetics/:id(\\d+)/steps/:stepId', async (req,res)=>{
+  try {
+    const id = Number(req.params.id);
+    const stepId = req.params.stepId;
+  let current = synthMonitors.find(m=>m.id===id);
+  if(!current && db){ try { const { getSynthMonitor } = await import('./db.js'); const row = getSynthMonitor(db, id); if(row){ current = { id: row.id, name: row.name, spec: row.spec, createdAt: row.createdAt }; synthMonitors.push(current); } } catch(_){ } }
+  if(!current) return res.status(404).json({error:'not found'});
+    const before = current.spec.steps?.length||0;
+    current.spec.steps = (current.spec.steps||[]).filter(s=> s.id!==stepId);
+    if((current.spec.steps||[]).length===before) return res.status(404).json({error:'step not found'});
+  if (db){ try { const { updateSynthMonitorSpec } = await import('./db.js'); updateSynthMonitorSpec(db, id, current.spec, current.spec.schedule); } catch(e){ console.warn('[synth] db delete-step update failed', e.message); } }
+    res.json({ id, removed: stepId, steps: current.spec.steps });
+  } catch(e){ console.error(e); res.status(500).json({error:'delete step failed'}); }
+});
+
+// Replace entire steps array
+app.put('/synthetics/:id(\\d+)/steps', async (req,res)=>{
+  try {
+    const id = Number(req.params.id);
+  let current = synthMonitors.find(m=>m.id===id);
+  if(!current && db){ try { const { getSynthMonitor } = await import('./db.js'); const row = getSynthMonitor(db, id); if(row){ current = { id: row.id, name: row.name, spec: row.spec, createdAt: row.createdAt }; synthMonitors.push(current); } } catch(_){ } }
+  if(!current) return res.status(404).json({error:'not found'});
+    let steps = Array.isArray(req.body?.steps) ? req.body.steps : [];
+    steps = steps.map(s=> normalizeSynthSpec({steps:[s]}).steps[0]);
+    const container = {steps}; ensureStepIds(container);
+    current.spec.steps = container.steps;
+  if (db){ try { const { updateSynthMonitorSpec } = await import('./db.js'); updateSynthMonitorSpec(db, id, current.spec, current.spec.schedule); } catch(e){ console.warn('[synth] db replace-steps update failed', e.message); } }
+    res.json({ id, steps: current.spec.steps });
+  } catch(e){ console.error(e); res.status(500).json({error:'replace steps failed'}); }
+});
+
+// Reorder steps by supplying an ordered array of step IDs
+app.post('/synthetics/:id(\\d+)/steps/reorder', async (req,res)=>{
+  try {
+    const id = Number(req.params.id);
+  let current = synthMonitors.find(m=>m.id===id);
+  if(!current && db){ try { const { getSynthMonitor } = await import('./db.js'); const row = getSynthMonitor(db, id); if(row){ current = { id: row.id, name: row.name, spec: row.spec, createdAt: row.createdAt }; synthMonitors.push(current); } } catch(_){ } }
+  if(!current) return res.status(404).json({error:'not found'});
+    const order = Array.isArray(req.body?.order) ? req.body.order : [];
+    if(!order.length) return res.status(400).json({error:'order_required'});
+    const map = new Map((current.spec.steps||[]).map(s=>[s.id,s]));
+    const newSteps = [];
+    for(const sid of order){ if(map.has(sid)) newSteps.push(map.get(sid)); }
+    // Append any missing steps (if some ids not included) at end to avoid accidental loss
+    for(const s of current.spec.steps||[]){ if(!newSteps.includes(s)) newSteps.push(s); }
+    current.spec.steps = newSteps;
+  if (db){ try { const { updateSynthMonitorSpec } = await import('./db.js'); updateSynthMonitorSpec(db, id, current.spec, current.spec.schedule); } catch(e){ console.warn('[synth] db reorder-steps update failed', e.message); } }
+    res.json({ id, steps: current.spec.steps });
+  } catch(e){ console.error(e); res.status(500).json({error:'reorder failed'}); }
+});
+
+// Delete monitor
+app.delete('/synthetics/:id(\\d+)', async (req,res)=>{
   noStore(res);
+  try {
+    const id = Number(req.params.id);
+    const idx = synthMonitors.findIndex(m=>m.id===id);
+    if (idx === -1 && !db) return res.status(404).json({ error:'not_found' });
+    // Soft delete if DB; else hard delete
+    if (db) {
+      try { const { softDeleteSynthMonitor } = await import('./db.js'); softDeleteSynthMonitor(db, id); } catch(_){}
+      const mem = synthMonitors.find(m=>m.id===id); if (mem) mem.deleted = true;
+    } else {
+      if (idx !== -1) synthMonitors.splice(idx,1);
+      synthScheduleState.delete(id);
+      for (let i=synthRuns.length-1;i>=0;i--) if (synthRuns[i].monitorId===id) synthRuns.splice(i,1);
+    }
+    res.json({ deleted:true, id, soft: !!db });
+  } catch(e){ res.status(500).json({ error:String(e?.message||e) }); }
+});
+
+// Restore soft-deleted monitor
+app.post('/synthetics/:id(\\d+)/restore', async (req,res)=>{
+  noStore(res);
+  try {
+    const id = Number(req.params.id);
+    if (!db) return res.status(400).json({ error:'not_supported' });
+    const { restoreSynthMonitor, getSynthMonitor } = await import('./db.js');
+    restoreSynthMonitor(db, id);
+    let m = synthMonitors.find(x=>x.id===id);
+    if(!m){ const row = getSynthMonitor(db, id); if(row){ m = { id: row.id, name: row.name, spec: row.spec, createdAt: row.createdAt }; synthMonitors.push(m); } }
+    if (!m) return res.status(404).json({ error:'not_found' });
+    // Rebuild schedule state
+    const sched = m.spec?.schedule || 'manual';
+    const mins = SCHEDULE_MINUTES[sched] || 0;
+    if (mins>0) synthScheduleState.set(m.id, { nextDueAt: Date.now() + mins*60000 });
+    res.json({ restored:true, id });
+  } catch(e){ res.status(500).json({ error:String(e?.message||e) }); }
+});
+
+// List runs (place BEFORE numeric id routes to avoid shadowing)
+app.get('/synthetics/runs', async (req,res)=>{
+  noStore(res);
+  try{
+    if (db){
+      const { listSynthRuns } = await import('./db.js');
+      const items = listSynthRuns(db, 50);
+      if (items && items.length) return res.json({ items });
+      return res.json({ items: synthRuns.slice(0,50) });
+    }
+  }catch(_){ }
   res.json({ items: synthRuns.slice(0,50) });
 });
 
+// Get a single run (detailed logs) - numeric id only
+app.get('/synthetics/runs/:id(\\d+)', async (req,res)=>{
+  noStore(res);
+  try{
+    const id = Number(req.params.id);
+    let run = synthRuns.find(r=>r.id===id);
+    if(!run && db){ try { const { getSynthRun } = await import('./db.js'); const row = getSynthRun(db, id); if(row){ run = row; } } catch(_){ } }
+    if(!run) return res.status(404).json({ error:'not_found' });
+    res.json(run);
+  }catch(e){ res.status(500).json({ error:String(e?.message||e) }); }
+});
+
+// Get a single monitor (with spec) - numeric id only
+app.get('/synthetics/:id(\\d+)', async (req,res)=>{
+  noStore(res);
+  try{
+    const id = Number(req.params.id);
+    let m = synthMonitors.find(x=>x.id===id);
+    if(!m && db){
+      try { const { getSynthMonitor } = await import('./db.js'); const row = getSynthMonitor(db, id); if(row){ m = { id: row.id, name: row.name, spec: row.spec, createdAt: row.createdAt }; synthMonitors.push(m); } } catch(_){ }
+    }
+    if(!m) return res.status(404).json({ error:'not_found' });
+  try { ensureStepIds(m.spec); } catch(_){ }
+  res.json({ id: m.id, name: m.name, spec: m.spec, createdAt: m.createdAt });
+  }catch(e){ res.status(500).json({ error:String(e?.message||e) }); }
+});
+
+// (Removed earlier shadowed list runs route, now placed above)
+
 async function runSyntheticMonitor(spec, runId){
   const logs = [];
-  const log = (m)=> logs.push({ ts: Date.now(), msg: m });
+  const stepsMeta = [];
+  const log = (m)=> { const entry = { ts: Date.now(), msg: m }; logs.push(entry); try { console.log(`[synth:${runId}] ${m}`); } catch(_){} };
   await ensureSynthDir();
   const fileRel = `synth/run-${runId}.png`;
   const fileAbs = path.join(__dirname, '../public', fileRel);
   // Try Playwright first
-  try{
+  try {
     const pw = await import('playwright').catch(()=>null);
     if (pw && pw.chromium) {
       const browser = await pw.chromium.launch({ headless: true });
-      const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+      // Extra headers from auth
+      const extraHeaders = (spec?.auth?.headers && typeof spec.auth.headers === 'object') ? spec.auth.headers : undefined;
+      const ctx = await browser.newContext({
+        viewport: { width: 1280, height: 800 },
+        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+        ...(extraHeaders? { extraHTTPHeaders: extraHeaders } : {})
+      });
+      // Cookies, if provided
+      try{
+        const startUrl = spec.startUrl || (spec.steps.find(s=>s.action==='goto')?.url) || '';
+        const baseHost = startUrl ? new URL(startUrl).hostname : null;
+        const cookies = Array.isArray(spec?.auth?.cookies) ? spec.auth.cookies : [];
+        if (cookies.length){
+          const toAdd = cookies.map(c=>({
+            name: String(c.name),
+            value: String(c.value),
+            domain: String(c.domain || baseHost || ''),
+            path: String(c.path || '/'),
+            httpOnly: !!c.httpOnly,
+            secure: !!c.secure,
+            sameSite: c.sameSite || undefined
+          })).filter(k=>k.name && k.value && k.domain);
+          if (toAdd.length){ log(`auth: add ${toAdd.length} cookie(s)`); await ctx.addCookies(toAdd); }
+        }
+      }catch(_){ }
       const page = await ctx.newPage();
       const timeout = Number(spec.timeoutMs||30000);
       const startUrl = spec.startUrl || (spec.steps.find(s=>s.action==='goto')?.url) || '';
-      if(startUrl){ log(`goto ${startUrl}`); await page.goto(startUrl, { timeout }); }
-      for (const step of spec.steps){
-        const t = step.timeoutMs || timeout;
-        if (step.action === 'goto' && step.url){ log(`goto ${step.url}`); await page.goto(step.url, { timeout: t }); }
-        else if (step.action === 'click' && step.selector){ log(`click ${step.selector}`); await page.click(step.selector, { timeout: t }); }
-        else if (step.action === 'type' && step.selector){ log(`type ${step.selector} ← ${step.text||''}`); await page.fill(step.selector, String(step.text||''), { timeout: t }); if(step.enter){ await page.keyboard.press('Enter'); } }
-        else if (step.action === 'waitFor' && step.selector){ log(`waitFor ${step.selector}`); await page.waitForSelector(step.selector, { timeout: t }); }
-        else if (step.action === 'assertTextContains'){ const sel = step.selector || 'body'; const txt = String(step.text||'').toLowerCase(); log(`assertTextContains ${sel} ~ ${txt}`); const content = await page.locator(sel).first().innerText({ timeout: t }).catch(async()=> (await page.content())); const ok = String(content||'').toLowerCase().includes(txt); if(!ok) throw new Error(`assert failed: missing text`); }
+      let stepError = null;
+      try {
+        if(startUrl){
+          const t0 = Date.now();
+          log(`goto ${startUrl}`);
+          try { await page.goto(startUrl, { timeout }); stepsMeta.push({ action:'goto', url:startUrl, ms: Date.now()-t0, ok:true }); }
+          catch(e){ stepsMeta.push({ action:'goto', url:startUrl, ms: Date.now()-t0, ok:false, error:String(e?.message||e) }); throw e; }
+        }
+        let currentStep = null; let currentStart = 0; let recordedFail=false;
+        for (const step of spec.steps){
+          const t = step.timeoutMs || step.retryMs || timeout;
+          const action = String(step.action||'').toLowerCase();
+          currentStep = { action, selector: step.selector, url: step.url };
+          currentStart = Date.now();
+          try {
+            if (action === 'goto' && step.url){ log(`goto ${step.url}`); await page.goto(step.url, { timeout: t }); }
+            else if (action === 'click' && step.selector){ log(`click ${step.selector}`); await page.click(step.selector, { timeout: t }); }
+            else if (action === 'type' && step.selector){ log(`type ${step.selector} ← ${step.text||''}`); await page.fill(step.selector, String(step.text||''), { timeout: t }); if(step.enter){ await page.keyboard.press('Enter'); } }
+            else if (action === 'waitfor' && step.selector){ log(`waitFor ${step.selector}`); await page.waitForSelector(step.selector, { timeout: t }); }
+            else if (action === 'wait' && step.ms){ const w=Math.min(step.ms, 120000); log(`wait ${w}ms`); await page.waitForTimeout(w); }
+            else if (action === 'asserttextcontains'){
+              const sel = step.selector || 'body';
+              const txt = String(step.text||'').toLowerCase();
+              const poll = step.pollMs || 600; // ms between retries
+              const retryBudget = step.retryMs != null ? Number(step.retryMs) : (step.timeoutMs || 0);
+              const deadline = retryBudget ? Date.now() + retryBudget : Date.now();
+              let attempt = 0; let ok=false; let lastContent='';
+              while(true){
+                attempt++;
+                try{
+                  const content = await page.locator(sel).first().innerText({ timeout: Math.min(3000, t) }).catch(async()=> (await page.content()));
+                  lastContent = String(content||'');
+                  ok = txt ? lastContent.toLowerCase().includes(txt) : !!lastContent;
+                }catch(err){ lastContent=''; ok=false; }
+                if(ok) { log(`assertTextContains ${sel} ✓ after ${attempt} attempt(s)`); break; }
+                if (retryBudget && Date.now() < deadline){ log(`assert retry ${sel} attempt=${attempt}`); await page.waitForTimeout(poll); continue; }
+                break;
+              }
+              if(!ok){
+                if(step.soft){ log(`soft assert failed ${sel} missing '${txt}'`); }
+                else { throw new Error('assert_failed'); }
+              }
+            }
+            stepsMeta.push({ ...currentStep, ms: Date.now()-currentStart, ok:true });
+          } catch(innerErr){
+            stepError = innerErr; recordedFail=true;
+            log('step error: '+String(innerErr?.message||innerErr));
+            stepsMeta.push({ ...currentStep, ms: Date.now()-currentStart, ok:false, error:String(innerErr?.message||innerErr) });
+            break; // stop processing further steps
+          }
+        }
+      } catch(err){
+        if(!stepError) stepError = err; // already logged inside loop
       }
-      await page.screenshot({ path: fileAbs, fullPage: true });
+      // Always attempt screenshot even if a step failed
+      try { await page.screenshot({ path: fileAbs, fullPage: true }); } catch(ssErr){ log('screenshot failed: '+String(ssErr?.message||ssErr)); }
       await browser.close();
-      return { ok: true, statusText: 'ok', screenshot: '/'+fileRel, logs };
+      if (stepError){
+        return { ok:false, statusText: String(stepError?.message||'failed'), screenshot: '/'+fileRel, logs, steps: stepsMeta };
+      }
+      return { ok: true, statusText: 'ok', screenshot: '/'+fileRel, logs, steps: stepsMeta };
+    } else {
+      log('playwright not available – using HTTP fallback (no screenshot)');
     }
-  }catch(e){ log('playwright failed: '+String(e?.message||e)); }
+  } catch(e){ log('playwright failed: '+String(e?.message||e)); }
   // Fallback: simple HTTP fetch
   try{
-    const startUrl = spec.startUrl || (spec.steps.find(s=>s.action==='goto')?.url) || '';
+    const startUrl = spec.startUrl || (spec.steps.find(s=>String(s.action||'').toLowerCase()==='goto')?.url) || '';
     if (!startUrl) return { ok:false, statusText:'no_url', logs };
     log(`fetch ${startUrl}`);
-    const r = await fetch(startUrl);
+    // Build headers from auth (including Cookie if cookies provided)
+    const hdrs = (spec?.auth?.headers && typeof spec.auth.headers === 'object') ? { ...spec.auth.headers } : {};
+    try{
+      const cookies = Array.isArray(spec?.auth?.cookies) ? spec.auth.cookies : [];
+      if (cookies.length){
+        const cookieStr = cookies.map(c=>`${c.name}=${c.value}`).join('; ');
+        if (cookieStr) hdrs['Cookie'] = cookieStr;
+      }
+    }catch(_){ }
+    const r = await fetch(startUrl, Object.keys(hdrs).length? { headers: hdrs } : undefined);
+    const statusNum = r.status;
     const text = await r.text();
-    const assertStep = spec.steps.find(s=>s.action==='assertTextContains');
+    if (statusNum >= 400) {
+      log(`http status ${statusNum}`);
+      const snippet = text.slice(0,300).replace(/\s+/g,' ').trim();
+      if (snippet) log(`body: ${snippet}`);
+    }
+    const assertStep = spec.steps.find(s=>String(s.action||'').toLowerCase()==='asserttextcontains');
     if (assertStep && assertStep.text) {
       const ok = text.toLowerCase().includes(String(assertStep.text).toLowerCase());
       return { ok, statusText: ok?'ok':'assert_failed', screenshot:null, logs };
     }
-    return { ok: r.ok, statusText: String(r.status), screenshot:null, logs };
-  }catch(e){ log('fetch failed: '+String(e?.message||e)); return { ok:false, statusText:'fetch_failed', screenshot:null, logs }; }
+    return { ok: r.ok, statusText: String(statusNum), screenshot:null, logs, steps: stepsMeta };
+  }catch(e){ log('fetch failed: '+String(e?.message||e)); return { ok:false, statusText:'fetch_failed', screenshot:null, logs, steps: stepsMeta }; }
 }
+
+// Simple scheduler loop for synthetic monitors
+if (process.env.NODE_ENV !== 'test') {
+  setInterval(async () => {
+    try{
+      const now = Date.now();
+      let list = synthMonitors;
+      if (db) {
+        try {
+          const { listSynthMonitors, getSynthMonitor } = await import('./db.js');
+          const items = listSynthMonitors(db);
+          const newList = [];
+          for (const r of items) {
+            if (r.deleted) continue; // skip soft deleted
+            const full = getSynthMonitor(db, r.id);
+            if (full && full.spec) newList.push({ id: full.id, name: full.name, createdAt: full.createdAt, spec: full.spec });
+          }
+          list = newList;
+        } catch(_){ }
+      }
+      for (const m of list) {
+        const mins = SCHEDULE_MINUTES[m.spec?.schedule || 'manual'] || 0;
+        if (!mins) continue;
+        const state = synthScheduleState.get(m.id) || { nextDueAt: now + mins*60000 };
+        if (now >= state.nextDueAt && !synthRunning.has(m.id)) {
+          // schedule next and run
+          state.nextDueAt = now + mins*60000;
+          synthScheduleState.set(m.id, state);
+          synthRunning.add(m.id);
+          const runId = synthRunNextId++;
+          const startedAt = Date.now();
+          console.log(`[scheduler] run monitor=${m.id} next=${new Date(state.nextDueAt).toISOString()}`);
+          try{
+            const result = await runSyntheticMonitor(m.spec, runId);
+            const rec = { id: runId, monitorId: m.id, startedAt, finishedAt: Date.now(), ok: !!result.ok, statusText: result.statusText||'', screenshot: result.screenshot||null, logs: result.logs||[], steps: result.steps||[] };
+            synthRuns.unshift(rec);
+            if (db){ try { const { insertSynthRun } = await import('./db.js'); insertSynthRun(db, rec); } catch(_){ } }
+          }catch(e){
+            synthRuns.unshift({ id: runId, monitorId: m.id, startedAt, finishedAt: Date.now(), ok:false, statusText: 'scheduler_failed', screenshot:null, logs: [{ ts: Date.now(), msg: String(e?.message||e) }], steps: [] });
+            if (db){ try { const { insertSynthRun } = await import('./db.js'); insertSynthRun(db, { id: runId, monitorId: m.id, startedAt, finishedAt: Date.now(), ok:false, statusText:'scheduler_failed', screenshot:null, logs: [{ ts: Date.now(), msg: String(e?.message||e) }], steps: [] }); } catch(_){ } }
+          } finally {
+            synthRunning.delete(m.id);
+          }
+        }
+      }
+    }catch(_){ }
+  }, 30000);
+}
+
+// (no cache helper needed; DB spec is loaded in scheduler loop)
 
 app.get('/logs/search', async (req,res)=>{
   noStore(res);
