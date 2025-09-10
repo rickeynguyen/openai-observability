@@ -594,6 +594,48 @@ app.patch('/synthetics/:id/schedule', async (req, res)=>{
 
 // Run a monitor once
 // Replace entire monitor (name/spec) including steps (ids assigned if missing)
+app.post('/synthetics/:id(\\d+)/run', async (req,res)=>{
+  noStore(res);
+  try {
+    const id = Number(req.params.id);
+    // Find monitor in memory or load from DB
+    let m = synthMonitors.find(x=>x.id===id);
+    if(!m && db){
+      try { const { getSynthMonitor } = await import('./db.js'); const row = getSynthMonitor(db, id); if(row){ m = { id: row.id, name: row.name, spec: row.spec, createdAt: row.createdAt }; synthMonitors.push(m); } } catch(_){ }
+    }
+    if(!m) return res.status(404).json({ error:'not_found' });
+    if (synthRunning.has(m.id)) return res.status(409).json({ error:'already_running' });
+    const runId = synthRunNextId++;
+    const startedAt = Date.now();
+    synthRunning.add(m.id);
+    // Fire and forget so client gets fast response
+    (async ()=>{
+      try {
+        const result = await runSyntheticMonitor(m.spec, runId);
+        const rec = { id: runId, monitorId: m.id, startedAt, finishedAt: Date.now(), ok: !!result.ok, statusText: result.statusText||'', screenshot: result.screenshot||null, logs: result.logs||[], steps: result.steps||[] };
+        synthRuns.unshift(rec);
+        if (db){ try { const { insertSynthRun } = await import('./db.js'); insertSynthRun(db, rec); } catch(_){ } }
+      } catch(e){
+        const rec = { id: runId, monitorId: m.id, startedAt, finishedAt: Date.now(), ok:false, statusText:String(e?.message||e), screenshot:null, logs:[{ ts: Date.now(), msg: 'run_failed: '+String(e?.message||e) }], steps: [] };
+        synthRuns.unshift(rec);
+        if (db){ try { const { insertSynthRun } = await import('./db.js'); insertSynthRun(db, rec); } catch(_){ } }
+      } finally {
+        synthRunning.delete(m.id);
+        // If monitor has a schedule, only update nextDueAt if none exists (don't shift schedule forward on manual run)
+        try {
+          const sched = m.spec?.schedule || 'manual';
+          const mins = SCHEDULE_MINUTES[sched] || 0;
+          if (mins>0) {
+            const state = synthScheduleState.get(m.id);
+            if (!state || !state.nextDueAt) synthScheduleState.set(m.id, { nextDueAt: Date.now() + mins*60000 });
+          }
+        } catch(_){ }
+      }
+    })();
+    res.json({ started:true, runId, monitorId: m.id });
+  } catch(e){ res.status(500).json({ error:String(e?.message||e) }); }
+});
+
 app.put('/synthetics/:id(\\d+)', async (req,res)=>{
   try {
     const id = Number(req.params.id);
