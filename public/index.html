@@ -626,8 +626,21 @@
       tbody.querySelectorAll('button[data-run-id]').forEach(btn=>{
         btn.addEventListener('click', async ()=>{
           const id=btn.getAttribute('data-run-id'); btn.disabled=true; const old=btn.textContent; btn.textContent='Running…';
-          try{ const r2=await fetch(`/synthetics/${id}/run`,{method:'POST'}); await r2.json().catch(()=>({})); }
-          catch(_){ }
+          try{
+            const r2=await fetch(`/synthetics/${id}/run`,{method:'POST'});
+            const jr=await r2.json().catch(()=>({}));
+            // Poll runs until we see the runId or timeout (15s)
+            if (r2.ok && jr && jr.runId){
+              const targetRunId = jr.runId; const started=Date.now();
+              const poll = async ()=>{
+                try{
+                  const rr=await fetch('/synthetics/runs?cache='+Date.now(),{cache:'no-store'}); if(rr.ok){ const jj=await rr.json(); if(Array.isArray(jj.items) && jj.items.some(r=>r.id===targetRunId)){ loadSynthRuns(); return true; } }
+                }catch(_){ }
+                return false;
+              };
+              let found=false; while(Date.now()-started<15000 && !found){ found=await poll(); if(!found) await new Promise(r=>setTimeout(r,1000)); }
+            }
+          }catch(_){ }
           btn.disabled=false; btn.textContent=old||'Run';
           loadSynthRuns();
         });
