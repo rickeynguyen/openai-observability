@@ -1,7 +1,8 @@
-FROM node:20-alpine
+FROM mcr.microsoft.com/playwright:v1.55.0-jammy
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm install --omit=dev || npm install --legacy-peer-deps --omit=dev
+# Install all dependencies including dev (Playwright) to enable browser runner
+RUN npm ci || npm install
 COPY . .
 EXPOSE 3000
 ENV NODE_ENV=production

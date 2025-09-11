@@ -7,9 +7,11 @@ primary_region = "sjc"
 
 [env]
   PORT = "3000"
-  PROBE_INTERVAL_SEC = "60"
+  PROBE_INTERVAL_SEC = "1800"
   OPENAI_MODEL = "gpt-4o-mini"
   PROBE_REGION = "us-west-1"
+  ENABLE_DB = "1"
+  DB_FILE = "/data/data.db"
 
 [http_service]
   internal_port = 3000
@@ -18,3 +20,7 @@ primary_region = "sjc"
   auto_start_machines = true
   min_machines_running = 1
   processes = ["app"]
+
+[mounts]
+  source = "data"
+  destination = "/data"
