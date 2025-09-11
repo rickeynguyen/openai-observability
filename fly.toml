@@ -6,12 +6,19 @@ primary_region = "sjc"
   dockerfile = "Dockerfile"
 
 [env]
-  PORT = "3000"
-  PROBE_INTERVAL_SEC = "1800"
-  OPENAI_MODEL = "gpt-4o-mini"
+  PORT = 3000
+  PROBE_INTERVAL_SEC = 1800
+  OPENAI_MODEL = "gpt-4.1-nano"
+  OPENAI_RESPONSES_MODEL=gpt-4o-mini
+  OPENAI_EMBEDDINGS_MODEL="text-embedding-3-small"
   PROBE_REGION = "us-west-1"
-  ENABLE_DB = "1"
+  ENABLE_DB = 1
   DB_FILE = "/data/data.db"
+  HTTP_TIMEOUT_MS = 12000
+  PROBE_MODE = "all"
+  LOG_SIM_ENABLED = 0
+  LOG_SIM_INTERVAL_MS = 30000
+  EMB_INDEX_INTERVAL_MS = 45000
 
 [http_service]
   internal_port = 3000
