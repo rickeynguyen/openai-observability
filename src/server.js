@@ -178,6 +178,7 @@ app.get('/config', (req, res) => {
       logSimEnabled: LOG_SIM_ENABLED,
       logSimIntervalMs: LOG_SIM_INTERVAL_MS,
       embIndexIntervalMs: EMB_INDEX_INTERVAL_MS,
+  ingestKeyConfigured: !!INGEST_KEY,
   synthetics: { enabled: true },
       probe: { intervalSec, model, region }
     });

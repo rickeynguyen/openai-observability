@@ -1,184 +1,225 @@
-# Lightweight OpenTelemetry Status Backend (No Grafana)
+# OpenAI Observability & Synthetic Monitoring (All‑in‑one Minimal Stack)
 
-A single-process service that probes key OpenAI API endpoints on a schedule and exposes simple health metrics via `/status` and a minimal dashboard at `/`. Uses the OpenTelemetry SDK in-process (no Collector) and an in-memory store for SLIs.
+Single-process Node.js service + lightweight HTML UI that gives you:
 
-## Quick start
+| Capability | Included | Notes |
+|------------|----------|-------|
+| API Probes / SLIs | ✅ | Latency & success aggregates, percentiles, multi-endpoint selection |
+| Live Stream (SSE) | ✅ | `/events` for near real-time probe points |
+| Historical Persistence | ✅ | SQLite (enable with `ENABLE_DB=1`) |
+| Log Ingestion & Search (FTS + Embeddings) | ✅ | Set `ENABLE_AI=1`, embeddings optional |
+| Embedding Similarity + Hybrid Search | ✅ | Vector store in SQLite (blob) + FTS5 |
+| Chat / AI Summaries | ✅ | Local heuristic or OpenAI Responses API when key provided |
+| Synthetic Browser Monitors | ✅ | Playwright (screenshots, steps, schedules) |
+| Auth (simple key) for ingestion & ops | ✅ | `INGEST_API_KEY` header check |
+| Deployment (Docker, Render, Fly) | ✅ | `render.yaml` & `fly.toml` samples |
+
+Minimal dependencies, no collector, no Grafana. Ideal for a small team or personal infra sanity dashboard.
+
+---
+## Quick Start (Local)
 ```bash
-cp .env.example .env
-# edit OPENAI_API_KEY and (optionally) OPENAI_MODEL/PROBE_INTERVAL_SEC/PROBE_ENDPOINTS
+cp .env .env.local 2>/dev/null || cp .env.example .env   # ensure you have a working file
+edit .env                                                # set OPENAI_API_KEY (low quota key recommended)
 npm install
 npm run dev
 # open http://localhost:3000
 ```
 
-## What it does
-- Every PROBE_INTERVAL_SEC seconds, probes one or more OpenAI endpoints (round-robin by default) with tiny requests.
-- Records success/HTTP status, latency, errType (timeout/network), and labels (endpoint, model, region). Also captures token usage (when available) and response bytes.
-- Aggregates last 60 minutes into success rate and p50/p95/p99 latency per endpoint.
-- Serves JSON at `/status` and a minimal HTML at `/` (with a time range selector 15m–24h).
+### Docker (local)
+```bash
+docker build -t openai-observability .
+docker run --rm -p 3000:3000 --env-file .env openai-observability
+```
 
-## Environment
-- `OPENAI_API_KEY` (required)
-- `OPENAI_MODEL` (default `gpt-4o-mini`)
-- `PROBE_REGION` (label only, default `us-west-1`)
-- `PROBE_INTERVAL_SEC` (default 60)
-- `HTTP_TIMEOUT_MS` (default 12000)
-- `DB_FILE` (optional path for sqlite file, default `data.db` in project root)
- - `ENABLE_DB` (enable persistence when set to `1` or `true`)
- - `PROBE_ENDPOINTS` (optional, comma-separated list of probes to run; defaults to safe set)
- - `PROBE_MODE` (optional: `roundrobin` [default] runs one endpoint per tick, or `all` runs all selected endpoints per tick)
- - `PROBE_HEAVY` (optional: `1` to include heavy probes like images generation)
- - `OPENAI_EMBEDDINGS_MODEL` (optional override for embeddings model; default `text-embedding-3-small`)
- - `OPENAI_MODERATION_MODEL` (optional override for moderation model; default `omni-moderation-latest`)
+### Render (recommended for quick hosted trial)
+1. Ensure `render.yaml` is committed (already in repo).
+2. Create a new Blueprint in Render, connect repo.
+3. Add disks: 1GB persistent at `/data`.
+4. Set secrets (`OPENAI_API_KEY`, `INGEST_API_KEY`), leave non-secret env vars in YAML.
+5. Deploy, open `/healthz` → should return `{ ok: true }`.
 
-## API endpoints
-- `GET /status?window=60` → JSON summary (change `window` minutes as needed)
-- `GET /` → tiny dashboard
-- `GET /traces` → raw trace events with filters, pagination (cursor), and exports
-- `GET /latency_histogram` → quick histogram for a given endpoint/time window
- - `GET /incidents` → optional incidents list (filtered by `?from`/`?to` epoch ms). Served from `public/incidents.json` if present.
- - `GET /timeseries` → bucketed counts (ok/total) and latency percentiles for a window or absolute range.
-
-## Cost & safety
-- Keep intervals modest (e.g., 60–180s). Most probes are tiny and deterministic.
-- Heavy probes (images) are opt-in via `PROBE_HEAVY=1`. Use sparingly.
-- Use a dedicated low-limit key for monitoring; set OpenAI budget alerts.
-
-## Extending
-- Add another probe by extending `src/probe.js` `_getProbeDefs()` with a new entry.
-- Persist via SQLite if you need history beyond the ring buffer.
-- For full OTel export later, add OTLP exporter + Collector.
-
-## Included probes (keys)
-Defaults (safe, low-cost):
-- `chat` → POST /v1/chat/completions (tiny max_tokens)
-- `responses` → POST /v1/responses (tiny input)
-- `embeddings` → POST /v1/embeddings (short input)
-- `moderations` → POST /v1/moderations
-- `models` → GET /v1/models
-- `files` → GET /v1/files
-- `fine_tunes` → GET /v1/fine_tuning/jobs
-- `batches` → GET /v1/batches
-- `assistants` → GET /v1/assistants
-
-Optional heavy (requires `PROBE_HEAVY=1`):
-- `images` → POST /v1/images/generations (small 256x256 prompt)
-
-Configure a subset via `PROBE_ENDPOINTS`, e.g. `PROBE_ENDPOINTS=chat,embeddings,models`.
-
-## Persistence
-Set `ENABLE_DB=1` to turn on SQLite persistence (via better-sqlite3). Data stored in `data.db` (override with `DB_FILE`). `/status` queries rows for the selected window and computes percentiles in-process. If disabled, service falls back to in-memory ring buffer only.
-
-## Fly Deploy (manual first time)
+### Fly (legacy optional)
+> Fly’s free tier model changes; use Render unless you already use Fly.
 ```bash
 fly auth login
 fly launch --no-deploy --dockerfile Dockerfile
-fly secrets set OPENAI_API_KEY=sk-...  # set once
+fly volumes create data --size 1 --region sjc
+fly secrets set OPENAI_API_KEY=sk-... INGEST_API_KEY=your-ingest
 fly deploy
-fly open
 ```
 
-## CI
-Pushes to `main` trigger GitHub Actions deploying with `flyctl`. Provide repo secret `FLY_API_TOKEN` (and optionally `OPENAI_API_KEY`).
+---
+## How It Works
+1. Periodic probes hit selected OpenAI endpoints using tiny requests.
+2. Each point (ts, ok, latency, status, tokens, endpoint, model, region) stored in ring buffer and optionally SQLite.
+3. The UI renders recent SLIs, percentiles, histograms and traces with filtering.
+4. Optional AI mode ingests arbitrary logs (manual or simulated) → FTS + embeddings → semantic / lexical search + chat summarization.
+5. Synthetic monitors run Playwright scripts generated or edited via a simple DSL with per-step timing & screenshots.
 
+---
+## Environment Variables
+Secrets (set via your platform’s secret manager; DO NOT commit real keys):
+- `OPENAI_API_KEY` – Needed for: embeddings indexing, AI summaries with LLM, synthetic draft, vector embedding.
+- `INGEST_API_KEY` – Gate for `/logs/*` ops and auto-index controls (client sends `x-api-key`).
+
+Core (safe to put in config files):
+- `OPENAI_MODEL` (default `gpt-4o-mini` or project override) – probe model.
+- `OPENAI_RESPONSES_MODEL` – model for Responses API (chat tab) fallback logic.
+- `OPENAI_EMBEDDINGS_MODEL` (default `text-embedding-3-small`).
+- `PROBE_INTERVAL_SEC` (e.g. 60–1800) – cadence per tick.
+- `PROBE_MODE` (`roundrobin` | `all`).
+- `PROBE_REGION` – label only.
+- `HTTP_TIMEOUT_MS` – timeout for probe HTTP calls.
+- `ENABLE_DB` (`1`) – enable SQLite persistence.
+- `DB_FILE` – path (e.g. `/data/data.db`).
+- `ENABLE_AI` – enable logs + embeddings + chat features.
+- `LOG_SIM_ENABLED` – auto-start log simulator.
+- `LOG_SIM_INTERVAL_MS` – simulator batch interval.
+- `EMB_INDEX_INTERVAL_MS` – auto embedding index tick.
+- `PROBE_ENDPOINTS` – comma list override (else default safe set).
+- `PROBE_HEAVY=1` – include optionally expensive probes (images, etc.).
+
+Other:
+- `INGEST_API_KEY` (dup reminder) – UI defaults to `secret`; change both sides.
+
+Health:
+- `/healthz` returns `{ ok: true }` when server is up.
+
+Security Tips:
+- Use a low-quota, isolated OpenAI key.
+- Rotate immediately if a key ever lands in git history.
+- Consider setting a stricter `PROBE_INTERVAL_SEC` (e.g. 300) to cap cost.
+
+---
+## Probes & Metrics
+- Endpoints: chat, responses, embeddings, moderations, models, files, fine_tunes, batches, assistants (+ images with `PROBE_HEAVY`).
+- Metrics: success rate (SLI), latency p50/p95/p99, raw recent events.
+- JSON: `GET /status?window=60` (minutes), streaming events via `GET /events`.
+- Timeseries / histograms: `GET /latency_histogram`, `GET /timeseries`.
+- Incidents overlay (optional): supply `public/incidents.json` → `GET /incidents`.
+
+---
+## Logs & AI (Observability Mode)
+Prerequisites: `ENABLE_DB=1`, `ENABLE_AI=1`, `OPENAI_API_KEY`, `INGEST_API_KEY`.
+
+Endpoints:
+- `POST /logs/ingest` (NDJSON or JSON array) – requires `x-api-key`.
+- Simulator: `GET /logs/sim/start`, `/logs/sim/stop`, `/logs/sim/status`.
+- Hybrid search: `GET /logs/search?query=...` (FTS + (future) vector scoring).
+- Embeddings index: `POST /ai/index/logs` (manual) or auto-indexer: `.../auto/start|stop|status`.
+- Chat summarization: `POST /ai/chat` (JSON) or streaming `POST /ai/chat/stream`.
+
+Chat UI usage:
+1. Open “Chat” tab, enter ingest key (matches `INGEST_API_KEY`).
+2. Optionally start simulator & auto-index.
+3. Toggle “Use LLM” to include model-based enhancement; off = local summarizer only.
+
+---
+## Synthetic Browser Monitors
+Create / edit synthetic tests inline or draft via LLM.
+
+Spec DSL (excerpt):
+```json
+{
+	"name": "Homepage",
+	"schedule": "every_5m",
+	"startUrl": "https://example.com",
+	"steps": [
+		{ "action": "goto", "url": "https://example.com" },
+		{ "action": "type", "selector": "input[name=q]", "text": "hello", "enter": true },
+		{ "action": "assertTextContains", "selector": "body", "text": "hello", "any": true }
+	]
+}
+```
+
+Actions: `goto | click | type | waitFor | assertTextContains` (+ timing & retry fields: `timeoutMs`, `retryMs`, `pollMs`, `soft`). Step IDs are auto-assigned & preserved across edits.
+
+Endpoints:
+- `POST /synthetics/draft` – LLM spec generation.
+- `POST /synthetics` – create monitor.
+- `GET /synthetics` – list.
+- `POST /synthetics/:id/run` – manual run now.
+- `PATCH /synthetics/:id/schedule` – schedule change (immediate run on change if interval > 0).
+- Step-level CRUD: `POST /synthetics/:id/steps`, `DELETE /synthetics/:id/steps/:stepId`, `PUT /synthetics/:id/steps`, `POST /synthetics/:id/steps/reorder`.
+- Runs listing: `GET /synthetics/runs`, details: `GET /synthetics/runs/:id`.
+
+Playwright is used if available; otherwise falls back to a simple HTTP GET + basic assertion.
+
+Persistence: with `ENABLE_DB=1` monitors & runs survive restarts (SQLite). Screenshots stored under `public/synth/`.
+
+---
+## API Summary (Selected)
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | /status | SLI summary window |
+| GET | /events | SSE stream of points |
+| GET | /traces | Raw probe events (filters) |
+| GET | /latency_histogram | Per-endpoint histogram |
+| GET | /timeseries | Bucketed latency + ok/total |
+| POST | /logs/ingest | Ingest logs (auth) |
+| GET | /logs/sim/start | Start simulator (auth) |
+| GET | /ai/index/auto/start | Start auto indexing (auth) |
+| POST | /ai/chat | Summary / optional LLM |
+| POST | /synthetics | Create monitor |
+| POST | /synthetics/:id/run | Run synthetic now |
+| GET | /synthetics/runs | Recent synthetic runs |
+| GET | /healthz | Health check |
+
+---
+## Deployment (Details)
+
+### Render (Blueprint)
+Uses `render.yaml` (Docker runtime). Adjust plan size & region; add disk at `/data` for persistence.
+
+### Fly
+If you opt to keep Fly, ensure volume and secrets as documented above; Playwright base image is large (~1.6GB) first pull.
+
+### Custom Docker / k8s
+Expose port 3000 → service; mount a persistent path for `DB_FILE`. Set secrets as environment variables in your orchestrator.
+
+---
 ## Testing
-Run `npm test` (Node built-in test runner) for store + status endpoint tests.
+```bash
+npm test
+```
+Uses Node built-in test runner for core logic (extend as needed).
 
-## UI enhancements (dashboard)
-- SLO widgets: current SLI (success rate), error budget remaining bar, and burn-rate sparkline.
-- Incident overlays: shaded windows on latency chart from `/incidents` or `public/incidents.json`.
-- Compare view: group by model or region; baseline/canary toggles.
-- Heatmaps: latency percentiles and error breakdowns.
-- Cost panel: stacked tokens and approximate cumulative cost line with simple pricing heuristics.
+---
+## Extending
+- Add probe: modify `_getProbeDefs()` in `src/probe.js`.
+- New synthetic action: extend runner switch in `runSyntheticMonitor`.
+- Additional log enrichment: adjust insertion logic in `insertLogs` (db.js).
+- Export traces externally: wire an OTLP exporter in `initOTel()`.
 
-To provide incidents, either use the bundled `/incidents` endpoint (it reads `public/incidents.json`) or edit `public/incidents.json` with entries like:
+---
+## Cost & Safety
+- Keep `PROBE_INTERVAL_SEC` higher in production (e.g., 300) unless you need fine granularity.
+- Avoid enabling heavy probes unless necessary.
+- Simulator is synthetic; disable in production (`LOG_SIM_ENABLED=0`).
+- Chat LLM mode only consumes tokens when you enable it.
 
-[
-	{ "id": "INC-1", "start": 1710001000000, "end": 1710001600000, "severity": "high", "title": "Example outage" }
-]
+---
+## Security / Hardening Ideas
+- Reverse proxy & basic auth for UI.
+- Rate limit ingestion endpoints.
+- Run as non-root user in a slimmer multi-stage image if desired.
+- Consider read-only filesystem (except mounted `/data`).
 
+---
+## License
+MIT (see `LICENSE`). Contributions welcome – please open an issue or PR.
 
-## Ingestion (Phase M2)
+---
+## At a Glance
+| Need | Variable(s) | Minimal Example |
+|------|-------------|-----------------|
+| Basic probes | OPENAI_API_KEY | key + defaults |
+| Persistence | ENABLE_DB=1, DB_FILE | /data/data.db |
+| AI Logs/Search | ENABLE_AI=1 + above | + INGEST_API_KEY + embeddings model |
+| Synthetics | (Playwright in image) | Already in Dockerfile |
+| Auto Index | EMB_INDEX_INTERVAL_MS | 45000 |
 
-Endpoint:
-- `POST /ingest/trace` — accepts a normalized trace JSON and stores it in memory (and SQLite when enabled). Body must include: `ts` (epoch ms), `endpoint`, `ok`, `latencyMs`, and optional token fields. See `src/schemas.js` for the minimal schema.
-
-Auth:
-- Set `INGEST_API_KEY=your-secret` to require a key. Clients send `x-api-key: your-secret` or `Authorization: Bearer your-secret`.
-
-SDKs:
-- A minimal JS helper will be provided under `packages/common` (pricing, schema, utils) and a future `packages/sdk-js` wrapper to instrument OpenAI calls and POST traces to `/ingest/trace`.
-
-## AI-centric observability (logs + search + embeddings)
-
-Flags:
-- ENABLE_AI=1, ENABLE_DB=1, OPENAI_API_KEY, EMBEDDING_MODEL=text-embedding-3-small (default)
-- LOG_SIM_ENABLED=1 (optional), LOG_SIM_INTERVAL_MS=30000
- - INGEST_API_KEY=secret (UI default). Change if you want a different key; enter it in the Chat tab.
- - EMB_INDEX_INTERVAL_MS=45000 (auto-index tick)
-
-Endpoints:
-- POST /logs/ingest (NDJSON or JSON array, requires INGEST_API_KEY)
-- GET /logs/sim/start, /logs/sim/stop (requires INGEST_API_KEY)
-- POST /ai/index/logs?limit=32&since=epoch_ms (embeds pending logs)
-- GET /logs/search?query=...&from=&to=&endpoint=&model=&region=&k=20 (hybrid vec+FTS)
-- GET /ai/metrics, GET /ai/summary (helpers that reuse /timeseries)
-
-Chat (beta):
-- UI: Click the "Chat" tab in the dashboard.
-- Backend: POST /ai/chat — returns a concise, LLM-free summary by default. If you enable "Use LLM" in the UI (or send `{ llm: true }`) and set `OPENAI_API_KEY`, it will call the OpenAI Responses API to enhance the summary.
-- Streaming: POST /ai/chat/stream — emits NDJSON lines with `{ delta }` chunks and a final `{ done, citations }`. The UI uses this by default and falls back to /ai/chat.
-- Controls: Start/Stop the log simulator and "Index embeddings" from the Chat tab. Provide `INGEST_API_KEY` (stored locally) to access protected ops.
-
-Quick start for Chat tab:
-1. Set `ENABLE_DB=1`, `ENABLE_AI=1`, `INGEST_API_KEY=your-secret`. Optionally set `OPENAI_API_KEY` for embeddings and LLM enhancement.
-2. Start the server, open the dashboard, switch to Chat, enter your ingest key, Start simulator, optionally Index embeddings, and ask a question.
-3. Toggle "Use LLM" in the Chat tab to get an enhanced summary (requires `OPENAI_API_KEY`).
-
-Notes:
-- If `LOG_SIM_ENABLED=1`, the server auto-starts the simulator. The Chat tab shows a subtle notice so the Start/Stop button state makes sense. Use Stop to pause the timer for this session; on restart it will auto-start again unless you set `LOG_SIM_ENABLED=0`.
-- The UI defaults the ingest key to `secret`. Set `INGEST_API_KEY=secret` (or change both sides) to avoid 401s when controlling the simulator or indexer.
-
-Misc:
-- `GET /config` returns non-sensitive runtime flags (ai/db enabled, sim/index intervals) for the UI.
-
-## Synthetic Monitors (beta)
-
-Create browser-like synthetic tests using the dashboard with AI assistance.
-
-UI:
-- Click "Create Synthetic" in the top menu.
-- Describe your test (e.g., "visit https://chatgpt.com, type 'tell me a joke' in the input, press Enter, pass if a response appears").
-- Click Draft with AI to generate a JSON spec; review/edit.
-- Click Create Monitor, then Run Now to execute (tries Playwright, falls back to HTTP fetch).
-
-Spec fields:
-- name: string
-- schedule: one of manual, every_1m, every_5m, every_10m, every_15m, every_30m, hourly
-- startUrl: string
-- timeoutMs: number
-- steps: array of actions: goto | click | type | waitFor | assertTextContains
-	- goto: { action: "goto", url }
-	- click: { action: "click", selector }
-	- type: { action: "type", selector, text, enter?: true }
-	- waitFor: { action: "waitFor", selector, timeoutMs? }
-	- assertTextContains: { action: "assertTextContains", selector?: "body", text: string, any?: true }
-- auth (optional):
-	- headers: object of headerName: value
-	- cookies: array of { name, value, domain?, path?, httpOnly?, secure?, sameSite? }
-
-Endpoints:
-- POST `/synthetics/draft` { prompt } → { spec }
-- POST `/synthetics` { spec } → { id, monitor }
-- GET `/synthetics` → { items } where each item includes { id, name, schedule, createdAt, lastRun?, nextDueAt? }
-- POST `/synthetics/:id/run` → { ok, statusText, screenshot?, logs[] }
-- GET `/synthetics/runs` → recent runs
-- PATCH `/synthetics/:id/schedule` { schedule } → update schedule
-
-Notes:
-- Playwright is optional. If not installed, the run falls back to a simple HTTP GET + text assert.
-- Screenshots (when available) are saved under `public/synth/` and shown in the modal.
-- Auth: For sites needing session state, include cookies and/or headers under `auth`. The runner injects headers and sets cookies for the domain derived from startUrl (or cookie.domain when provided). HTTP fallback also sends a combined Cookie header.
-- Scheduling: Choose a schedule in the Monitors table. The backend scheduler evaluates due monitors every ~30s and persists runs when SQLite is enabled. UI now shows Last run and Next run.
-- Persistence: Set ENABLE_DB=1 to persist monitors and runs. Without DB, data resets on server restart.
+---
+Happy hacking ✨
 
