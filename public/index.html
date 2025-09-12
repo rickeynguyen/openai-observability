@@ -1016,7 +1016,11 @@
       const headers={};const k=getKey();if(k) headers['x-api-key']=k;
       const r=await fetch(url,{method,headers});
       let json=null; try{ json = await r.clone().json(); }catch(_){ }
-      msg.textContent=r.ok?'ok':'err '+r.status;
+      if(r.ok){ msg.textContent='ok'; }
+      else {
+        const reason = (json && (json.error||json.detail)) ? (json.error||json.detail) : '';
+        msg.textContent = 'err '+r.status + (reason? (' • '+reason):'');
+      }
       setTimeout(()=>{msg.textContent='';},1200);
       return { ok:r.ok, status:r.status, json };
     }catch(_){ msg.textContent='err'; setTimeout(()=>{msg.textContent='';},1200); return { ok:false, status:0, json:null }; }
