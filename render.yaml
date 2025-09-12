@@ -2,7 +2,7 @@ services:
   - type: web
     name: openai-observability
     runtime: docker
-    plan: starter # or free if available
+    plan: free # or free if available
     region: oregon
     autoDeploy: true
     disk:
