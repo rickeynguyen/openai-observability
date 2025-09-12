@@ -187,6 +187,29 @@ app.get('/config', (req, res) => {
   }
 });
 
+// Minimal env debug (sanitized) to help diagnose deployment config mismatches
+app.get('/debug/env', (req,res)=>{
+  try {
+    const pick = (k)=> process.env[k];
+    const mask = (v)=> v ? (v.length<=8? '*'.repeat(v.length) : v.slice(0,2)+'***'+v.slice(-2)) : '';
+    res.json({
+      ENABLE_DB: pick('ENABLE_DB') || null,
+      DB_FILE: pick('DB_FILE') || null,
+      ENABLE_AI: pick('ENABLE_AI') || null,
+      PROBE_INTERVAL_SEC: pick('PROBE_INTERVAL_SEC') || null,
+      PROBE_REGION: pick('PROBE_REGION') || null,
+      OPENAI_MODEL: pick('OPENAI_MODEL') || null,
+      LOG_SIM_ENABLED: pick('LOG_SIM_ENABLED') || null,
+      LOG_SIM_INTERVAL_MS: pick('LOG_SIM_INTERVAL_MS') || null,
+      EMB_INDEX_INTERVAL_MS: pick('EMB_INDEX_INTERVAL_MS') || null,
+      INGEST_API_KEY_present: !!pick('INGEST_API_KEY'),
+      INGEST_API_KEY_sample: pick('INGEST_API_KEY') ? mask(pick('INGEST_API_KEY')) : null,
+      PID: process.pid,
+      startedAt: new Date().toISOString()
+    });
+  } catch(e){ res.status(500).json({ error:String(e?.message||e) }); }
+});
+
 // logs ingestion (NDJSON or JSON array)
 app.post('/logs/ingest', async (req, res) => {
   noStore(res);
