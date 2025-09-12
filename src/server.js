@@ -14,6 +14,7 @@ import fetch from 'node-fetch';
 let fetchWindow = null;
 let fetchRange = null;
 let db = null;
+let dbInitError = null;
 const enableDb = process.env.ENABLE_DB === '1' || process.env.ENABLE_DB === 'true';
 if (process.env.NODE_ENV !== 'test' && enableDb) {
   try {
@@ -29,7 +30,8 @@ if (process.env.NODE_ENV !== 'test' && enableDb) {
   try { dbMod.ensureSynthSchema?.(db); } catch(e) { console.warn('[db] synth schema init failed', e.message); }
     console.log('[db] sqlite ready');
   } catch (e) {
-    console.warn('[db] sqlite init failed', e.message);
+  dbInitError = e;
+  console.warn('[db] sqlite init failed', e.message);
   }
 } else if (!enableDb) {
   console.log('[db] disabled (set ENABLE_DB=1 to enable persistence)');
@@ -179,6 +181,7 @@ app.get('/config', (req, res) => {
       logSimIntervalMs: LOG_SIM_INTERVAL_MS,
       embIndexIntervalMs: EMB_INDEX_INTERVAL_MS,
   ingestKeyConfigured: !!INGEST_KEY,
+  dbInitError: db ? null : (dbInitError ? String(dbInitError.message||dbInitError) : null),
   synthetics: { enabled: true },
       probe: { intervalSec, model, region }
     });

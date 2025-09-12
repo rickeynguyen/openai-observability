@@ -1,8 +1,13 @@
 import Database from 'better-sqlite3';
 import path from 'node:path';
+import fs from 'node:fs';
 
 export function openDb() {
   const file = process.env.DB_FILE || path.join(process.cwd(), 'data.db');
+  try {
+    const dir = path.dirname(file);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  } catch(_) {}
   const db = new Database(file);
   db.pragma('journal_mode = WAL');
   db.exec(`CREATE TABLE IF NOT EXISTS probe_results (
