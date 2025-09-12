@@ -1,0 +1,42 @@
+services:
+  - type: web
+    name: openai-observability
+    runtime: docker
+    plan: starter # or free if available
+    region: oregon
+    autoDeploy: true
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: ENABLE_DB
+        value: "1"
+      - key: DB_FILE
+        value: /data/data.db
+      - key: ENABLE_AI
+        value: "1"
+      - key: PROBE_INTERVAL_SEC
+        value: "1800"
+      - key: OPENAI_MODEL
+        value: gpt-4.1-nano
+      - key: OPENAI_RESPONSES_MODEL
+        value: gpt-4o-mini
+      - key: OPENAI_EMBEDDINGS_MODEL
+        value: text-embedding-3-small
+      - key: PROBE_REGION
+        value: us-west-1
+      - key: HTTP_TIMEOUT_MS
+        value: "12000"
+      - key: PROBE_MODE
+        value: all
+      - key: LOG_SIM_ENABLED
+        value: "0"
+      - key: LOG_SIM_INTERVAL_MS
+        value: "30000"
+      - key: EMB_INDEX_INTERVAL_MS
+        value: "45000"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: INGEST_API_KEY
+        sync: false
