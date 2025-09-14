@@ -54,3 +54,19 @@ test('GET /timeseries provides buckets with ok/total and percentiles', async () 
   assert.ok('p50' in json.buckets[0]);
   server.close();
 });
+
+test('POST /probe/interval updates intervalSec runtime', async () => {
+  const server = http.createServer(app);
+  await new Promise(res => server.listen(0, res));
+  const port = server.address().port;
+  // choose one allowed value different from default 60
+  const res = await fetch(`http://127.0.0.1:${port}/probe/interval`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ intervalSec: 300 })
+  });
+  assert.equal(res.status, 200);
+  const json = await res.json();
+  assert.equal(json.intervalSec, 300);
+  server.close();
+});
