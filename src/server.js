@@ -106,12 +106,22 @@ function extractResponsesText(j) {
   } catch (_) {}
   return null;
 }
+// Helper: extract text from Chat Completions API JSON
+function extractChatCompletionsText(j){
+  try {
+    const c = j?.choices?.[0];
+    if (c?.message?.content) return c.message.content;
+    if (Array.isArray(c?.messages) && c.messages[0]?.content) return c.messages[0].content; // rare shapes
+  } catch(_){ }
+  return null;
+}
 
 // Probe setup
 const intervalSec = Number(process.env.PROBE_INTERVAL_SEC || '60');
 const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const region = process.env.PROBE_REGION || 'us-west-1';
 const probe = new ProbeRunner({ store, intervalSec, model, db, persist: !!db });
+export { probe };
 if (process.env.NODE_ENV !== 'test') probe.start();
 
 // Prevent caching of API responses
@@ -180,11 +190,46 @@ app.get('/config', (req, res) => {
       logSimEnabled: LOG_SIM_ENABLED,
       logSimIntervalMs: LOG_SIM_INTERVAL_MS,
       embIndexIntervalMs: EMB_INDEX_INTERVAL_MS,
-  ingestKeyConfigured: !!INGEST_KEY,
-  dbInitError: db ? null : (dbInitError ? String(dbInitError.message||dbInitError) : null),
-  synthetics: { enabled: true },
-      probe: { intervalSec, model, region }
+      ingestKeyConfigured: !!INGEST_KEY,
+      dbInitError: db ? null : (dbInitError ? String(dbInitError.message||dbInitError) : null),
+      synthetics: { enabled: true },
+      probe: { intervalSec: probe.intervalSec, model, region },
+      // Provide a curated list of commonly used OpenAI models for UI dropdown; safe (no secrets)
+      models: [
+        'gpt-4.1-mini',
+        'gpt-4.1',
+        'gpt-4o-mini',
+        'gpt-4o',
+        'gpt-4.1-nano',
+        'chatgpt-4o-latest',
+        'gpt-5',
+        'gpt-5-mini',
+        'gpt-5-nano'
+      ]
     });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message||e) });
+  }
+});
+
+// Runtime update of probe interval (allowed values: 60, 300, 600, 900 seconds)
+app.post('/probe/interval', (req, res) => {
+  try {
+    const allowed = [60, 300, 600, 900];
+    const bodyVal = req.body && (req.body.intervalSec ?? req.body.interval);
+    const qVal = req.query.intervalSec || req.query.interval;
+    const raw = bodyVal != null ? bodyVal : qVal;
+    const next = Number(raw);
+    if (!allowed.includes(next)) {
+      return res.status(400).json({ error: 'invalid_interval', allowed });
+    }
+    if (probe.intervalSec === next) {
+      return res.json({ updated: false, intervalSec: probe.intervalSec });
+    }
+    probe.stop();
+    probe.intervalSec = next;
+    if (process.env.NODE_ENV !== 'test') probe.start();
+    res.json({ updated: true, intervalSec: probe.intervalSec });
   } catch (e) {
     res.status(500).json({ error: String(e?.message||e) });
   }
@@ -268,17 +313,27 @@ function generateSyntheticLogs(count=10){
   return out;
 }
 
-app.get('/logs/sim/start', requireIngestKey, async (req,res)=>{
-  noStore(res);
-  if (!ENABLE_AI) return res.status(400).json({ error:'ENABLE_AI=1 required' });
-  if (!enableDb || !db) return res.status(400).json({ error:'ENABLE_DB=1 required' });
+async function startLogSimulator(res){
   if (logSimTimer) return res.json({ running:true });
   const { insertLogs } = await import('./db.js');
   logSimTimer = setInterval(()=>{
     try { const batch=generateSyntheticLogs(5+Math.floor(Math.random()*20)); insertLogs(db,batch); } catch(e){ console.warn('[logs/sim]', e.message); }
   }, LOG_SIM_INTERVAL_MS);
   console.log(`[logs/sim] started ${LOG_SIM_INTERVAL_MS}ms`);
-  res.json({ started:true, intervalMs: LOG_SIM_INTERVAL_MS });
+  return res.json({ started:true, intervalMs: LOG_SIM_INTERVAL_MS });
+}
+app.get('/logs/sim/start', requireIngestKey, async (req,res)=>{
+  noStore(res);
+  if (!ENABLE_AI) return res.status(400).json({ error:'ENABLE_AI=1 required' });
+  if (!enableDb || !db) return res.status(400).json({ error:'ENABLE_DB=1 required' });
+  return startLogSimulator(res);
+});
+// POST alias (frontend auto-start previously used POST causing 404) – keep for backward compatibility
+app.post('/logs/sim/start', requireIngestKey, async (req,res)=>{
+  noStore(res);
+  if (!ENABLE_AI) return res.status(400).json({ error:'ENABLE_AI=1 required' });
+  if (!enableDb || !db) return res.status(400).json({ error:'ENABLE_DB=1 required' });
+  return startLogSimulator(res);
 });
 
 app.get('/logs/sim/stop', requireIngestKey, (req,res)=>{
@@ -1342,6 +1397,8 @@ app.post('/ai/chat', async (req, res) => {
   let usedLLM = false;
   const useLLM = body.llm === true && !!process.env.OPENAI_API_KEY;
   let llmModel = null; let llmTried = false; let llmStatus = null;
+  // Ensure route/fallback vars exist even when LLM path not executed
+  let llmRoute = null; let llmFallback = null;
   if (useLLM) {
       try {
         llmTried = true;
@@ -1381,51 +1438,87 @@ app.post('/ai/chat', async (req, res) => {
             `User question: ${userMsg || '(none)'}\n`+
             `Top logs: ${logs.slice(0,5).map(l=>`[${new Date(l.ts).toISOString()}] ${l.status} ${l.endpoint} ${l.model||''} ${l.region||''} ${String(l.text||'').slice(0,160)}`).join('\n')}`
           );
-  llmModel = process.env.OPENAI_RESPONSES_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini';
-    const r = await fetch('https://api.openai.com/v1/responses', {
-          method: 'POST',
-          headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` },
-          body: JSON.stringify({
-      model: llmModel,
-            input: [
-              { role: 'system', content: [ { type: 'input_text', text: sys } ] },
-              { role: 'user', content: [ { type: 'input_text', text: ctx } ] }
-            ],
-            max_output_tokens: 300,
-            temperature: 0.2
-          })
-        });
-    llmStatus = r.status;
-    if (r.ok) {
-          const j = await r.json();
-          const txt = extractResponsesText(j);
-          if (txt) { answer = txt; usedLLM = true; }
-        } else if (llmModel !== 'gpt-4o-mini') {
-          // Fallback to a safe default model if env model failed
-          try {
-            const fallbackModel = 'gpt-4o-mini';
-            const rf = await fetch('https://api.openai.com/v1/responses', {
-              method: 'POST',
-              headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` },
-              body: JSON.stringify({
-                model: fallbackModel,
-                input: [
-                  { role: 'system', content: [ { type: 'input_text', text: sys } ] },
-                  { role: 'user', content: [ { type: 'input_text', text: ctx } ] }
-                ],
-                max_output_tokens: 300,
-                temperature: 0.2
-              })
-            });
-            llmStatus = rf.status; llmModel = fallbackModel;
-            if (rf.ok) {
-              const jf = await rf.json();
-              const txt2 = extractResponsesText(jf);
-              if (txt2) { answer = txt2; usedLLM = true; }
-            }
-          } catch {}
-        }
-    console.log('[ai/chat] LLM', { tried: llmTried, used: usedLLM, status: llmStatus, model: llmModel });
+  // Allow per-request override (body.model) if provided and in allowlist; else env; else default
+  const MODEL_ALLOWLIST = new Set([
+    'gpt-4.1-mini','gpt-4.1','gpt-4o-mini','gpt-4o','gpt-4o-realtime-preview',
+    'o4-mini','o4','gpt-4.1-nano','gpt-4o-mini-translate','chatgpt-4o-latest',
+    'gpt-5','gpt-5-mini','gpt-5-nano',
+    'text-embedding-3-small','text-embedding-3-large','omni-moderation-latest'
+  ]);
+  const reqModelRaw = (typeof body.model === 'string') ? body.model.trim() : '';
+  let overrideModel = null;
+  if (reqModelRaw && MODEL_ALLOWLIST.has(reqModelRaw)) overrideModel = reqModelRaw;
+  llmModel = overrideModel || process.env.OPENAI_RESPONSES_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini';
+  // reuse outer llmRoute/llmFallback
+  async function callResponses(modelName){
+    const isG5 = /^gpt-5/.test(modelName);
+    // For gpt-5* send a minimal payload (model + input) to avoid unsupported params while schema stabilizes
+    let payload;
+    if (isG5) {
+      payload = { model: modelName, input:[ { role:'system', content:[{ type:'input_text', text: sys }] }, { role:'user', content:[{ type:'input_text', text: ctx }] } ] };
+    } else {
+      payload = { model: modelName, input:[ { role:'system', content:[{ type:'input_text', text: sys }] }, { role:'user', content:[{ type:'input_text', text: ctx }] } ], max_output_tokens: 300, temperature: 0.2 };
+    }
+    return fetch('https://api.openai.com/v1/responses', { method:'POST', headers:{ 'Content-Type':'application/json','Authorization':`Bearer ${process.env.OPENAI_API_KEY}` }, body: JSON.stringify(payload) });
+  }
+  async function callChat(modelName){
+    const isG5 = /^gpt-5/.test(modelName);
+    let payload;
+    if (isG5) {
+      payload = { model: modelName, messages:[ { role:'system', content: sys }, { role:'user', content: ctx } ] }; // minimal payload
+    } else {
+      payload = { model: modelName, messages:[ { role:'system', content: sys }, { role:'user', content: ctx } ], max_tokens: 300, temperature: 0.2 };
+    }
+    return fetch('https://api.openai.com/v1/chat/completions', { method:'POST', headers:{ 'Content-Type':'application/json','Authorization':`Bearer ${process.env.OPENAI_API_KEY}` }, body: JSON.stringify(payload) });
+  }
+  // Prefer chat/completions for gpt-5* models (assumed not yet on responses)
+  const preferChat = /^gpt-5/.test(llmModel);
+  try {
+    let primaryResp; let primaryModel = llmModel; let primaryRoute;
+    if (preferChat) { primaryRoute='chat.completions'; primaryResp = await callChat(primaryModel); }
+    else { primaryRoute='responses'; primaryResp = await callResponses(primaryModel); }
+    llmStatus = primaryResp.status; llmRoute = primaryRoute;
+    if (primaryResp.ok) {
+      const j = await primaryResp.json();
+      const txt = primaryRoute==='responses'? extractResponsesText(j): extractChatCompletionsText(j);
+      if (txt) { answer = txt; usedLLM = true; }
+    } else {
+      // Attempt alternate route if 4xx and other route not tried yet
+      if (primaryResp.status>=400 && primaryResp.status<500) {
+        const altRoute = primaryRoute==='responses' ? 'chat.completions' : 'responses';
+        let primaryErrSnippet = null; try { primaryErrSnippet = (await primaryResp.text()).slice(0,300); } catch(_){ }
+        llmFallback = { reason:'primary_failed', primaryRoute, primaryStatus: primaryResp.status, primaryErr: primaryErrSnippet };
+        try {
+          const altResp = primaryRoute==='responses'? await callChat(primaryModel) : await callResponses(primaryModel);
+          llmStatus = altResp.status; llmRoute = altRoute;
+          if (altResp.ok) {
+            const j2 = await altResp.json();
+            const txt2 = altRoute==='responses'? extractResponsesText(j2): extractChatCompletionsText(j2);
+            if (txt2) { answer = txt2; usedLLM = true; }
+            llmFallback.altSucceeded = true;
+          } else {
+            let altErrSnippet=null; try { altErrSnippet=(await altResp.text()).slice(0,300); } catch(_){ }
+            llmFallback.altStatus = altResp.status; if(altErrSnippet) llmFallback.altErr = altErrSnippet;
+          }
+        } catch(eAlt){ llmFallback.altError = String(eAlt?.message||eAlt); }
+      }
+      // Final fallback to default model via responses if still not used
+      if (!usedLLM && llmModel !== 'gpt-4o-mini') {
+        try {
+          const fbModel = 'gpt-4o-mini';
+          const fbResp = await callResponses(fbModel);
+          llmStatus = fbResp.status; llmRoute = 'responses';
+          llmFallback = { ...(llmFallback||{}), finalFallbackModel: fbModel, finalFallbackRoute:'responses', finalFallbackStatus: fbResp.status };
+          if (fbResp.ok) { const jf = await fbResp.json(); const txtf = extractResponsesText(jf); if (txtf) { answer = txtf; usedLLM = true; llmModel = fbModel; } }
+        } catch(eFb){ llmFallback = { ...(llmFallback||{}), finalFallbackError: String(eFb?.message||eFb) }; }
+      }
+    }
+    console.log('[ai/chat] LLM', { tried: llmTried, used: usedLLM, status: llmStatus, model: llmModel, route: llmRoute, fallback: llmFallback||null });
+  } catch(eAll) {
+    llmFallback = { ...(llmFallback||{}), outerError: String(eAll?.message||eAll) };
+    console.warn('[ai/chat] LLM failed', String(eAll?.message||eAll));
+  }
+  // Attach debug metadata to response later (answer variable already set)
       } catch(e) {
         // fall back silently
     console.warn('[ai/chat] LLM failed', String(e?.message||e));
@@ -1451,7 +1544,9 @@ app.post('/ai/chat', async (req, res) => {
       { name:'tokens_summary', rows: [['prompt', tokensPrompt], ['completion', tokensCompletion], ['total', tokensTotal]] }
   ].concat(dataTables), context: dataContext };
   const narrative = (usedLLM && answer) ? answer : buildNarrative();
-  res.json({ answer, narrative, citations, data, summary, usedLLM, llmModel, llmTried, llmStatus });
+  // Expose debug routing metadata to help diagnose 400s on certain model families
+  res.json({ answer, narrative, citations, data, summary, usedLLM, llmModel, llmTried, llmStatus, llmRoute, llmFallback });
+  // Clients not using these fields can ignore; shape additive (non-breaking)
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
@@ -1600,6 +1695,7 @@ app.post('/ai/chat/stream', async (req, res) => {
   }
   let usedLLM = false;
   let llmModel = null; let llmTried = false; let llmStatus = null;
+  let llmRoute = null; let llmFallback = null; // ensure defined for final write
   if (useLLM) {
       try {
         llmTried = true;
@@ -1638,32 +1734,78 @@ app.post('/ai/chat/stream', async (req, res) => {
             `User question: ${userMsg || '(none)'}\n`+
             `Top logs: ${logs.slice(0,5).map(l=>`[${new Date(l.ts).toISOString()}] ${l.status} ${l.endpoint} ${l.model||''} ${l.region||''} ${String(l.text||'').slice(0,160)}`).join('\n')}`
           );
-  llmModel = process.env.OPENAI_RESPONSES_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini';
-        const r = await fetch('https://api.openai.com/v1/responses', {
-          method: 'POST',
-          headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` },
-          body: JSON.stringify({ model: llmModel, input: [
-            { role: 'system', content: [ { type: 'input_text', text: sys } ] },
-            { role: 'user', content: [ { type: 'input_text', text: ctx } ] }
-          ], max_output_tokens: 400, temperature: 0.2 })
-        });
-    llmStatus = r.status;
-  if (r.ok) { const j = await r.json(); const txt = extractResponsesText(j); if (txt) { answer = txt; usedLLM = true; } }
-  else if (llmModel !== 'gpt-4o-mini') {
-    try {
-      const fallbackModel = 'gpt-4o-mini';
-      const rf = await fetch('https://api.openai.com/v1/responses', {
-        method: 'POST', headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` },
-        body: JSON.stringify({ model: fallbackModel, input: [
-          { role: 'system', content: [ { type: 'input_text', text: sys } ] },
-          { role: 'user', content: [ { type: 'input_text', text: ctx } ] }
-        ], max_output_tokens: 400, temperature: 0.2 })
-      });
-      llmStatus = rf.status; llmModel = fallbackModel;
-  if (rf.ok) { const jf = await rf.json(); const txt2 = extractResponsesText(jf); if (txt2) { answer = txt2; usedLLM = true; } }
-    } catch {}
+  // Per-request override (body.model) allowed via same allowlist as non-stream route
+  const MODEL_ALLOWLIST = new Set([
+    'gpt-4.1-mini','gpt-4.1','gpt-4o-mini','gpt-4o','gpt-4o-realtime-preview',
+    'o4-mini','o4','gpt-4.1-nano','gpt-4o-mini-translate','chatgpt-4o-latest',
+    'gpt-5','gpt-5-mini','gpt-5-nano',
+    'text-embedding-3-small','text-embedding-3-large','omni-moderation-latest'
+  ]);
+  const reqModelRaw = (typeof body.model === 'string') ? body.model.trim() : '';
+  let overrideModel = null;
+  if (reqModelRaw && MODEL_ALLOWLIST.has(reqModelRaw)) overrideModel = reqModelRaw;
+  llmModel = overrideModel || process.env.OPENAI_RESPONSES_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini';
+  async function callResponses(modelName){
+    const isG5 = /^gpt-5/.test(modelName);
+    let payload;
+    if (isG5) {
+      payload = { model: modelName, input:[ { role:'system', content:[{ type:'input_text', text: sys }] }, { role:'user', content:[{ type:'input_text', text: ctx }] } ] };
+    } else {
+      payload = { model: modelName, input:[ { role:'system', content:[{ type:'input_text', text: sys }] }, { role:'user', content:[{ type:'input_text', text: ctx }] } ], max_output_tokens: 400, temperature: 0.2 };
+    }
+    return fetch('https://api.openai.com/v1/responses', { method:'POST', headers:{ 'Content-Type':'application/json','Authorization':`Bearer ${process.env.OPENAI_API_KEY}` }, body: JSON.stringify(payload) });
   }
-        console.log('[ai/chat/stream] LLM', { tried: llmTried, used: usedLLM, status: llmStatus, model: llmModel });
+  async function callChat(modelName){
+    const isG5 = /^gpt-5/.test(modelName);
+    let payload;
+    if (isG5) {
+      payload = { model: modelName, messages:[ { role:'system', content: sys }, { role:'user', content: ctx } ] };
+    } else {
+      payload = { model: modelName, messages:[ { role:'system', content: sys }, { role:'user', content: ctx } ], max_tokens: 400, temperature: 0.2 };
+    }
+    return fetch('https://api.openai.com/v1/chat/completions', { method:'POST', headers:{ 'Content-Type':'application/json','Authorization':`Bearer ${process.env.OPENAI_API_KEY}` }, body: JSON.stringify(payload) });
+  }
+  const preferChat = /^gpt-5/.test(llmModel);
+  try {
+    let primaryResp; let primaryRoute;
+    if (preferChat) { primaryRoute='chat.completions'; primaryResp = await callChat(llmModel); }
+    else { primaryRoute='responses'; primaryResp = await callResponses(llmModel); }
+    llmStatus = primaryResp.status; llmRoute = primaryRoute;
+    if (primaryResp.ok) {
+      const j = await primaryResp.json();
+      const txt = primaryRoute==='responses'? extractResponsesText(j) : extractChatCompletionsText(j);
+      if (txt) { answer = txt; usedLLM = true; }
+    } else {
+      if (primaryResp.status>=400 && primaryResp.status<500) {
+        let primaryErrSnippet=null; try { primaryErrSnippet=(await primaryResp.text()).slice(0,300); } catch(_){ }
+        llmFallback = { reason:'primary_failed', primaryRoute, primaryStatus: primaryResp.status, primaryErr: primaryErrSnippet };
+        try {
+          const altRoute = primaryRoute==='responses' ? 'chat.completions' : 'responses';
+          const altResp = primaryRoute==='responses'? await callChat(llmModel) : await callResponses(llmModel);
+          llmStatus = altResp.status; llmRoute = altRoute;
+          if (altResp.ok) {
+            const j2 = await altResp.json();
+            const txt2 = altRoute==='responses'? extractResponsesText(j2) : extractChatCompletionsText(j2);
+            if (txt2) { answer = txt2; usedLLM = true; }
+            llmFallback.altSucceeded = true;
+          } else { let altErrSnippet=null; try { altErrSnippet=(await altResp.text()).slice(0,300); } catch(_){ } llmFallback.altStatus = altResp.status; if(altErrSnippet) llmFallback.altErr = altErrSnippet; }
+        } catch(eAlt){ llmFallback.altError = String(eAlt?.message||eAlt); }
+      }
+      if (!usedLLM && llmModel !== 'gpt-4o-mini') {
+        try {
+          const fbModel='gpt-4o-mini';
+          const fbResp = await callResponses(fbModel);
+          llmStatus = fbResp.status; llmRoute = 'responses';
+          llmFallback = { ...(llmFallback||{}), finalFallbackModel: fbModel, finalFallbackRoute:'responses', finalFallbackStatus: fbResp.status };
+          if (fbResp.ok) { const jf = await fbResp.json(); const txtf = extractResponsesText(jf); if (txtf) { answer = txtf; usedLLM = true; llmModel = fbModel; } }
+        } catch(eFb){ llmFallback = { ...(llmFallback||{}), finalFallbackError: String(eFb?.message||eFb) }; }
+      }
+    }
+    console.log('[ai/chat/stream] LLM', { tried: llmTried, used: usedLLM, status: llmStatus, model: llmModel, route: llmRoute, fallback: llmFallback||null });
+  } catch(eAll){
+    llmFallback = { ...(llmFallback||{}), outerError: String(eAll?.message||eAll) };
+    console.warn('[ai/chat/stream] LLM failed', String(eAll?.message||eAll));
+  }
       } catch(e) {
         console.warn('[ai/chat/stream] LLM failed', String(e?.message||e));
       }
@@ -1712,7 +1854,7 @@ app.post('/ai/chat/stream', async (req, res) => {
       { name:'lat_percentiles', rows: [['p50', p50||0], ['p95', p95||0], ['p99', p99||0]] },
       { name:'tokens_summary', rows: [['prompt', tokensPrompt], ['completion', tokensCompletion], ['total', tokensTotal]] }
   ].concat(dataTables), context: dataContext };
-  write({ done: true, citations, data, summary, narrative: usedLLM ? answer : buildNarrative(), usedLLM, llmModel, llmTried, llmStatus });
+  write({ done: true, citations, data, summary, narrative: usedLLM ? answer : buildNarrative(), usedLLM, llmModel, llmTried, llmStatus, llmRoute, llmFallback });
     try { res.end(); } catch(_){}
   } catch (e) {
     console.error('[ai/chat/stream] failed', e);

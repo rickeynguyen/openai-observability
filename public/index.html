@@ -38,6 +38,7 @@
   #chatAnswer pre code{border:none;padding:0}
   #chatAnswer a{color:#93c5fd;text-decoration:underline}
   #chatAnswer blockquote{border-left:3px solid #334155;margin:6px 0;padding:4px 8px;background:#0f172a}
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     </style>
   </head>
   <body>
@@ -47,6 +48,14 @@
         <label class="muted" style="font-size:12px;display:flex;align-items:center;gap:4px">Preset:
           <select id="windowSelect" style="background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:4px 6px;font-size:12px">
             <option value="15">15m</option><option value="30">30m</option><option value="60" selected>60m</option><option value="180">3h</option><option value="720">12h</option><option value="1440">24h</option><option value="4320">3d</option><option value="10080">7d</option><option value="20160">14d</option><option value="43200">30d</option><option value="129600">90d</option>
+          </select>
+        </label>
+        <label class="muted" style="font-size:12px;display:flex;align-items:center;gap:4px">Probe interval:
+          <select id="probeIntervalSelect" style="background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:4px 6px;font-size:12px">
+            <option value="60">60s</option>
+            <option value="300">5m</option>
+            <option value="600">10m</option>
+            <option value="900">15m</option>
           </select>
         </label>
   <label class="muted" style="font-size:12px;display:flex;align-items:center;gap:6px"><input id="useCustomRange" type="checkbox" /> Use custom range</label>
@@ -280,6 +289,7 @@
           <button id="chatToggleIndex" class="btn btn-accent" type="button">Enable auto-index</button>
           <span class="muted">Uses current endpoint and time range</span>
           <span id="simAutoNotice" class="muted" style="display:none; padding:2px 6px; border:1px solid #334155; border-radius:6px; background:#0f172a;">Simulator auto-start is enabled by server config</span>
+          <span id="simAutoStatus" class="muted" style="display:none; padding:2px 6px; border:1px solid #334155; border-radius:6px; background:#0f172a;"></span>
           <span style="margin-left:auto; display:flex; gap:6px; align-items:center;">
             <label class="muted">Ingest key:</label>
             <input id="chatKey" type="password" placeholder="x-api-key (default: secret)" style="width:180px;background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:4px 6px;" />
@@ -307,6 +317,11 @@
               <option value="" selected>Pick a prompt template…</option>
             </select>
           </label>
+          <label>Model:
+            <select id="chatModel" style="background:#111827;color:#e5e7eb;border:1px solid #243244;border-radius:6px;padding:4px 6px;min-width:200px">
+              <option value="">(default)</option>
+            </select>
+          </label>
           <label style="display:flex; gap:6px; align-items:center;">
             <input id="chatUseLlm" type="checkbox" /> Use LLM
           </label>
@@ -320,6 +335,10 @@
           <div style="display:flex;flex-direction:column;gap:8px;align-items:stretch;">
             <button id="chatSend" style="background:#2563eb;border:1px solid #1d4ed8;color:#e5e7eb;border-radius:6px;padding:8px 12px;font-size:13px;cursor:pointer;min-width:96px">Send</button>
             <button id="chatClear" style="background:#1f2937;border:1px solid #243244;color:#e5e7eb;border-radius:6px;padding:6px 10px;font-size:12px;cursor:pointer;">Clear</button>
+            <div id="chatLoading" style="display:none; font-size:11px; color:#93c5fd; align-items:center; gap:6px; padding:2px 4px;">
+              <span class="spinner" style="width:14px; height:14px; border:2px solid #3b82f6; border-right-color:transparent; border-radius:50%; display:inline-block; animation:spin .7s linear infinite;"></span>
+              <span>Running…</span>
+            </div>
           </div>
         </div>
       </div>
@@ -332,7 +351,17 @@
             </div>
             <button id="copySummaryBtn" class="btn" type="button" disabled title="Copy summary to clipboard">Copy summary</button>
           </div>
-          <div id="chatCallout" style="display:none; margin-bottom:8px; padding:6px 8px; border-radius:6px; border:1px solid #243244; background:#0f172a; font-size:12px; font-weight:600;"></div>
+          <div style="position:relative;">
+            <div id="chatCallout" style="display:none; margin-bottom:8px; padding:6px 8px; border-radius:6px; border:1px solid #243244; background:#0f172a; font-size:12px; font-weight:600;">
+              <span id="chatCalloutText"></span>
+              <button id="calloutInfoBtn" title="Show reliability threshold legend" style="float:right; background:transparent; border:none; color:#93c5fd; cursor:pointer; font-size:12px; padding:0; margin-left:8px;">ℹ️</button>
+            </div>
+            <div id="calloutLegend" style="display:none; position:absolute; top:100%; right:0; z-index:20; background:#0b1220; border:1px solid #243244; border-radius:8px; padding:8px; width:260px; font-size:11px; line-height:1.3; box-shadow:0 4px 16px rgba(0,0,0,0.4);">
+              <div style="font-weight:600; margin-bottom:4px;">Reliability Legend</div>
+              <div id="calloutLegendBody" style="display:flex; flex-direction:column; gap:4px;"></div>
+              <div class="muted" style="margin-top:6px;">Evaluated each refresh; improvements are debounced briefly to reduce flicker.</div>
+            </div>
+          </div>
           <div id="chatNarrative" style="display:none; margin-bottom:8px; font-size:13px; line-height:1.35"></div>
           <div id="chatAnswer" style="font-size:13px; line-height:1.35">—</div>
           <div id="chatAnswerMeta" class="muted" style="font-size:11px; margin-top:6px;"></div>
@@ -516,10 +545,60 @@
       function selectedEndpoints(){const v=document.getElementById('endpointFilter').value;return (!v||v==='__all__')?[]:[v];}
   function getWindow(){return Number(document.getElementById('windowSelect').value);} function toEpoch(dt){return dt?new Date(dt).getTime():null;} function absoluteRange(){const use=document.getElementById('useCustomRange');if(!use||!use.checked) return null;const f=toEpoch(document.getElementById('fromTs').value);const t=toEpoch(document.getElementById('toTs').value);return (f&&t&&t>f)?{from:f,to:t}:null;}
   function updateRangeInputsEnabled(){const use=document.getElementById('useCustomRange');const on=!!(use&&use.checked);['fromTs','toTs','applyRange'].forEach(id=>{const el=document.getElementById(id);if(el){el.disabled=!on;el.style.opacity=on?"1":"0.6";el.style.pointerEvents=on?"auto":"none";}});}
-      async function load(resetCursor=true){try{const win=getWindow();const eps=selectedEndpoints();const abs=absoluteRange();const query=abs?new URLSearchParams({from:String(abs.from),to:String(abs.to)}):new URLSearchParams({window:String(win)});if(eps.length) query.set('endpoint',eps.join(','));const traceParams=new URLSearchParams(query.toString());traceParams.set('limit','200');if(traceState.cursor&&!resetCursor){traceParams.set('cursor',String(traceState.cursor));traceParams.set('direction',traceState.direction);} if(document.getElementById('errorsOnly').checked) traceParams.set('errorsOnly','1');const slowVal=document.getElementById('slowMs').value;if(slowVal) traceParams.set('slowMs',slowVal);const [statusRes,tracesRes]=await Promise.all([
-        fetch('/status?'+query.toString(),{cache:'no-store'}),
-        fetch('/traces?'+traceParams.toString(),{cache:'no-store'})
-      ]);const statusJson=await statusRes.json();const tracesJson=await tracesRes.json();if(resetCursor){traceState.cursor=null;traceState.direction='prev';}traceState.serverCursors=tracesJson.cursor;document.getElementById('since').textContent=`(since ${new Date(statusJson.since).toLocaleString()})`;const cards=document.getElementById('cards');cards.innerHTML='';const endpointKeys=Object.keys(statusJson.endpoints);if(!endpointKeys.length){cards.innerHTML='<div class="muted">No data yet. Waiting for first probe…</div>';populateEndpointFilter([]);return;}populateEndpointFilter(endpointKeys);endpointKeys.forEach(ep=>{const s=statusJson.endpoints[ep];const okRate=s.successRate==null?'–':(s.successRate*100).toFixed(2)+'%';const lat=s.latencyMs||{};const errList=Object.entries(s.errors).map(([k,v])=>`<span class="pill">${k}: ${v}</span>`).join(' ');const histogramId='hist_'+ep.replace(/[^a-z0-9]/gi,'_');const errLabel=abs?'(custom)':`(${win}m)`;const cardHtml=`<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div><span class="k">Endpoint</span> <span class="v">${ep}</span></div><div class="${s.successRate>=0.995?'ok':'bad'}">${okRate}</div></div><table><tr><th>Total</th><th>OK</th><th>p50</th><th>p95</th><th>p99</th></tr><tr><td>${s.total}</td><td>${s.ok}</td><td>${lat.p50 ?? '–'} ms</td><td>${lat.p95 ?? '–'} ms</td><td>${lat.p99 ?? '–'} ms</td></tr></table><div style="margin-top:8px"><div class="muted" style="margin-bottom:6px">Errors ${errLabel}</div><div>${errList||'<span class=\"muted\">none</span>'}</div></div><div style=\"margin-top:8px\"><div class=\"muted\" style=\"margin-bottom:4px\">Latency dist</div><canvas id=\"${histogramId}\" height=\"30\" style=\"width:100%;background:#0f172a;border:1px solid #243244;border-radius:4px\"></canvas></div></div>`;const wrapper=document.createElement('div');wrapper.innerHTML=cardHtml;cards.appendChild(wrapper.firstElementChild);fetchLatencyHistogram(ep,histogramId,abs,win);});const tbody=document.querySelector('#tracesTable tbody');tbody.innerHTML='';let points=tracesJson.points.slice();points.sort((a,b)=>{const k=traceState.sort.key;let av=a[k],bv=b[k];if(k==='iso'||k==='ts'){av=a.ts;bv=b.ts;}if(typeof av==='string'){av=av.toLowerCase();bv=String(bv).toLowerCase();}if(av<bv) return traceState.sort.dir==='asc'?-1:1;if(av>bv) return traceState.sort.dir==='asc'?1:-1;return 0;});traceState.currentPage=points;points.forEach(p=>{const tr=document.createElement('tr');const slowThreshold=document.getElementById('slowMs').value?Number(document.getElementById('slowMs').value):null;const highlight=!p.ok?'#fb7185':(slowThreshold&&p.latencyMs>=slowThreshold?'#f59e0b':'');tr.innerHTML=`<td>${p.iso}</td><td>${p.status ?? ''}</td><td>${p.ok?'✔':'✖'}</td><td>${p.latencyMs}</td><td>${p.endpoint}</td><td>${p.model||''}</td><td>${p.region||''}</td><td>${p.errType||''}</td><td>${p.tokensTotal ?? ''}</td><td>${p.respBytes ?? ''}</td>`;if(highlight) tr.style.color=highlight;if(!p.ok) tr.style.color='#fb7185';tbody.appendChild(tr);});document.getElementById('traceMeta').textContent=`Returned ${tracesJson.returned}/${tracesJson.total} points (limit=${tracesJson.limit}) cursor(prev=${tracesJson.cursor.prev},next=${tracesJson.cursor.next})`;document.getElementById('prevPage').disabled=!tracesJson.cursor||!tracesJson.cursor.prev;document.getElementById('nextPage').disabled=!tracesJson.cursor||!tracesJson.cursor.next;document.getElementById('lastRefresh').textContent='Last refresh: '+new Date().toLocaleTimeString();}catch(e){console.error(e);document.getElementById('lastRefresh').textContent='Last refresh error';}}
+      async function load(resetCursor=true){
+        try {
+          const win=getWindow();
+          const eps=selectedEndpoints();
+          const abs=absoluteRange();
+            const query=abs?new URLSearchParams({from:String(abs.from),to:String(abs.to)}):new URLSearchParams({window:String(win)});
+          if(eps.length) query.set('endpoint',eps.join(','));
+          const traceParams=new URLSearchParams(query.toString());
+          traceParams.set('limit','200');
+          if(traceState.cursor&&!resetCursor){traceParams.set('cursor',String(traceState.cursor));traceParams.set('direction',traceState.direction);} 
+          if(document.getElementById('errorsOnly').checked) traceParams.set('errorsOnly','1');
+          const slowVal=document.getElementById('slowMs').value; if(slowVal) traceParams.set('slowMs',slowVal);
+          const [statusRes,tracesRes]=await Promise.all([
+            fetch('/status?'+query.toString(),{cache:'no-store'}),
+            fetch('/traces?'+traceParams.toString(),{cache:'no-store'})
+          ]);
+          const statusJson=await statusRes.json();
+          const tracesJson=await tracesRes.json();
+          if(resetCursor){traceState.cursor=null;traceState.direction='prev';}
+          traceState.serverCursors=tracesJson.cursor;
+          document.getElementById('since').textContent=`(since ${new Date(statusJson.since).toLocaleString()})`;
+          const cards=document.getElementById('cards');
+          cards.innerHTML='';
+          const endpointKeys=Object.keys(statusJson.endpoints);
+          if(!endpointKeys.length){cards.innerHTML='<div class="muted">No data yet. Waiting for first probe…</div>';populateEndpointFilter([]);return;}
+          populateEndpointFilter(endpointKeys);
+          endpointKeys.forEach(ep=>{
+            const s=statusJson.endpoints[ep];
+            const okRate=s.successRate==null?'–':(s.successRate*100).toFixed(2)+'%';
+            const lat=s.latencyMs||{};
+            const errList=Object.entries(s.errors).map(([k,v])=>`<span class="pill">${k}: ${v}</span>`).join(' ');
+            const tsId='ts_'+ep.replace(/[^a-z0-9]/gi,'_');
+            const errLabel=abs?'(custom)':`(${win}m)`;
+            const cardHtml=`<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div><span class="k">Endpoint</span> <span class="v">${ep}</span></div><div class="${s.successRate>=0.995?'ok':'bad'}">${okRate}</div></div><table><tr><th>Total</th><th>OK</th><th>p50</th><th>p95</th><th>p99</th></tr><tr><td>${s.total}</td><td>${s.ok}</td><td>${lat.p50 ?? '–'} ms</td><td>${lat.p95 ?? '–'} ms</td><td>${lat.p99 ?? '–'} ms</td></tr></table><div style="margin-top:8px"><div class="muted" style="margin-bottom:6px">Errors ${errLabel}</div><div>${errList||'<span class=\"muted\">none</span>'}</div></div><div style=\"margin-top:8px\"><div class=\"muted\" style=\"margin-bottom:4px\">Latency p95 over time</div><canvas id=\"${tsId}\" height=\"40\" style=\"width:100%;background:#0f172a;border:1px solid #243244;border-radius:4px\"></canvas><div id=\"${tsId}_hover\" class=\"muted\" style=\"margin-top:4px;font-size:11px;min-height:14px\"></div></div></div>`;
+            const wrapper=document.createElement('div');
+            wrapper.innerHTML=cardHtml;
+            cards.appendChild(wrapper.firstElementChild);
+            fetchEndpointTimeseries(ep,tsId,abs,win);
+          });
+          const tbody=document.querySelector('#tracesTable tbody');
+          tbody.innerHTML='';
+          let points=tracesJson.points.slice();
+          points.sort((a,b)=>{const k=traceState.sort.key;let av=a[k],bv=b[k];if(k==='iso'||k==='ts'){av=a.ts;bv=b.ts;}if(typeof av==='string'){av=av.toLowerCase();bv=String(bv).toLowerCase();}if(av<bv) return traceState.sort.dir==='asc'?-1:1;if(av>bv) return traceState.sort.dir==='asc'?1:-1;return 0;});
+          traceState.currentPage=points;
+          points.forEach(p=>{const tr=document.createElement('tr');const slowThreshold=document.getElementById('slowMs').value?Number(document.getElementById('slowMs').value):null;const highlight=!p.ok?'#fb7185':(slowThreshold&&p.latencyMs>=slowThreshold?'#f59e0b':'');tr.innerHTML=`<td>${p.iso}</td><td>${p.status ?? ''}</td><td>${p.ok?'✔':'✖'}</td><td>${p.latencyMs}</td><td>${p.endpoint}</td><td>${p.model||''}</td><td>${p.region||''}</td><td>${p.errType||''}</td><td>${p.tokensTotal ?? ''}</td><td>${p.respBytes ?? ''}</td>`;if(highlight) tr.style.color=highlight;if(!p.ok) tr.style.color='#fb7185';tbody.appendChild(tr);});
+          document.getElementById('traceMeta').textContent=`Returned ${tracesJson.returned}/${tracesJson.total} points (limit=${tracesJson.limit}) cursor(prev=${tracesJson.cursor.prev},next=${tracesJson.cursor.next})`;
+          document.getElementById('prevPage').disabled=!tracesJson.cursor||!tracesJson.cursor.prev;
+          document.getElementById('nextPage').disabled=!tracesJson.cursor||!tracesJson.cursor.next;
+          document.getElementById('lastRefresh').textContent='Last refresh: '+new Date().toLocaleTimeString();
+        } catch(e){
+          console.error(e);
+          document.getElementById('lastRefresh').textContent='Last refresh error';
+        }
+      }
       function pad(n){return String(n).padStart(2,'0');}
       function toLocalInput(ts){const d=new Date(ts);return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;}
       function syncPresetToRange(){const mins=getWindow();const now=Date.now();const from=now-mins*60000;document.getElementById('fromTs').value=toLocalInput(from);document.getElementById('toTs').value=toLocalInput(now);} 
@@ -537,7 +616,12 @@
       function exportCsv(){const data=buildCurrentSummary();if(!data.length)return;const header=['endpoint','total','ok','p50','p95','p99'];const lines=[header.join(','),...data.map(r=>header.map(h=>r[h]).join(','))];download('status.csv',lines.join('\n'));}function exportJson(){const data=buildCurrentSummary();download('status.json',JSON.stringify(data,null,2));}
       function exportTrace(fmt){if(!traceState.currentPage.length)return;if(fmt==='json')return download('traces_page.json',JSON.stringify(traceState.currentPage,null,2));const header=['iso','status','ok','latencyMs','endpoint','model','region','errType','tokensTotal','tokensPrompt','tokensCompletion','respBytes'];const lines=[header.join(','),...traceState.currentPage.map(r=>header.map(h=>r[h]??'').join(','))];download('traces_page.csv',lines.join('\n'));}
       async function exportAllTraces(fmt){try{const win=getWindow();const eps=selectedEndpoints();const abs=absoluteRange();const base=abs?new URLSearchParams({from:String(abs.from),to:String(abs.to)}):new URLSearchParams({window:String(win)});if(eps.length) base.set('endpoint',eps.join(','));if(document.getElementById('errorsOnly').checked) base.set('errorsOnly','1');const slowVal=document.getElementById('slowMs').value;if(slowVal) base.set('slowMs',slowVal);let all=[];let cursor=null;let direction='prev';const limit=500;let safety=0;while(safety<50){const qp=new URLSearchParams(base.toString());qp.set('limit',String(limit));if(cursor){qp.set('cursor',String(cursor));qp.set('direction',direction);}const r=await fetch('/traces?'+qp.toString());const j=await r.json();all=all.concat(j.points);if(!j.cursor||!j.cursor.next||j.points.length<limit) break;cursor=j.cursor.next;direction='prev';safety++;}if(fmt==='json')return download('traces_all.json',JSON.stringify(all,null,2));const header=['iso','status','ok','latencyMs','endpoint','model','region','errType','tokensTotal','tokensPrompt','tokensCompletion','respBytes'];const lines=[header.join(','),...all.map(r=>header.map(h=>r[h]??'').join(','))];download('traces_all.csv',lines.join('\n'));}catch(e){console.error('export all traces failed',e);}}
-  async function fetchLatencyHistogram(ep,id,abs,win){try{const params=abs?new URLSearchParams({from:String(abs.from),to:String(abs.to),endpoint:ep}):new URLSearchParams({window:String(win),endpoint:ep});const r=await fetch('/latency_histogram?'+params.toString(),{cache:'no-store'});const j=await r.json();const canvas=document.getElementById(id);if(!canvas)return;const ctx=canvas.getContext('2d');ctx.clearRect(0,0,canvas.width,canvas.height);if(!j.buckets||!j.buckets.length){ctx.fillStyle='#64748b';ctx.font='10px system-ui';ctx.fillText('no data',4,16);return;}const maxC=Math.max(...j.buckets.map(b=>b.count));const w=canvas.clientWidth||canvas.width;const h=canvas.height;const barW=w/j.buckets.length;j.buckets.forEach((b,i)=>{const bh=(b.count/maxC)*(h-4);ctx.fillStyle='#3b82f6';ctx.fillRect(i*barW,h-bh,barW-1,bh);});}catch(e){}}
+  async function fetchEndpointTimeseries(ep,id,abs,win){try{const params=abs?new URLSearchParams({from:String(abs.from),to:String(abs.to),endpoint:ep}):new URLSearchParams({window:String(win),endpoint:ep});params.set('stepSec','60');const r=await fetch('/timeseries?'+params.toString(),{cache:'no-store'});if(!r.ok) return;const j=await r.json();const canvas=document.getElementById(id);if(!canvas)return;const ctx=canvas.getContext('2d');const hoverEl=document.getElementById(id+'_hover');const buckets=j.buckets||[];const vals=buckets.map(b=>b.p95).filter(v=>v!=null);ctx.clearRect(0,0,canvas.width,canvas.height);if(!vals.length){ctx.fillStyle='#64748b';ctx.font='10px system-ui';ctx.fillText('no data',4,18);return;}const w=canvas.clientWidth||canvas.width;const h=canvas.height;canvas.width=w;const tMin=buckets[0].t,tMax=buckets[buckets.length-1].t;const maxV=Math.max(...vals,1);ctx.strokeStyle='#2563eb';ctx.beginPath();buckets.forEach((b,i)=>{const v=b.p95||0;const x=(b.t-tMin)/(tMax-tMin||1)*(w-1);const y=h- (v/maxV)*(h-4)-2;if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke(); // hover interaction
+    canvas.onmousemove=(e)=>{const rect=canvas.getBoundingClientRect();const x=e.clientX-rect.left;const rel=x/(w-1);const t=tMin+rel*(tMax-tMin);let nearest=null;for(const b of buckets){if(!nearest||Math.abs(b.t-t)<Math.abs(nearest.t-t)) nearest=b;}if(nearest){const v=nearest.p95!=null?nearest.p95.toFixed(0)+'ms':'—';if(hoverEl) hoverEl.textContent=new Date(nearest.t).toLocaleTimeString()+': p95 '+v;}};canvas.onmouseleave=()=>{if(hoverEl) hoverEl.textContent='';};}catch(e){/* ignore */}}
+  // Probe interval dropdown logic
+  async function initProbeInterval(){try{const r=await fetch('/config',{cache:'no-store'});if(!r.ok)return;const j=await r.json();const sel=document.getElementById('probeIntervalSelect');if(!sel)return;const cur=j && j.probe ? j.probe.intervalSec : 60; // set existing
+    if([...sel.options].some(o=>o.value==String(cur))) sel.value=String(cur);sel.addEventListener('change',async()=>{const nv=Number(sel.value);try{const resp=await fetch('/probe/interval',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({intervalSec:nv})});if(!resp.ok){sel.classList.add('bad');setTimeout(()=>sel.classList.remove('bad'),1200);} }catch(_){}});}catch(_){}}
+  initProbeInterval();
   function download(filename,text){const blob=new Blob([text],{type:'text/plain'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),4000);}function setActiveTab(id){['viewSummary','viewTraces','viewChat','viewSynthetics'].forEach(x=>{const el=document.getElementById(x);if(el){if(x===id)el.classList.add('active');else el.classList.remove('active');}})}
   document.getElementById('windowSelect').addEventListener('change',()=>{syncPresetToRange();load(true);updateEnhancements();refreshChatLogs();});
   document.getElementById('useCustomRange').addEventListener('change',()=>{updateRangeInputsEnabled();load(true);updateEnhancements();refreshChatLogs();});
@@ -745,32 +829,73 @@
 
       let chatDiagramLastData = null;
       let chatLastSummary = null;
+      let lastCalloutState = { level:null, ts:0 };
+      const CALLOUT_THRESHOLDS = [
+        { level:'severe', label:'Severe degradation', test: s=> (1 - s.sli) >= 0.25 || s.sli < 0.90, color:'#3a0e14', border:'#7f1d1d', fg:'#fb7185' },
+        { level:'degraded', label:'Degraded — investigate', test: s=> s.sli < 0.96, color:'#3a0e14', border:'#7f1d1d', fg:'#fb7185' },
+        { level:'moderate', label:'Moderate degradation', test: s=> s.sli < 0.98, color:'#3b2f07', border:'#92400e', fg:'#f59e0b' },
+        { level:'slight', label:'SLA slightly degraded', test: s=> s.sli < 0.985, color:'#3b2f07', border:'#92400e', fg:'#f59e0b' },
+        { level:'minor', label:'Minor blips', test: s=> s.sli < 0.99, color:'#0b1220', border:'#1f2937', fg:'#93c5fd' },
+        { level:'healthy', label:'Healthy — within target', test: s=> s.sli < 0.995, color:'#073a2a', border:'#14532d', fg:'#34d399' },
+        { level:'optimal', label:'SLA likely being met', test: s=> true, color:'#073a2a', border:'#14532d', fg:'#34d399' }
+      ];
       function computeCallout(summary){
-        try{
+        try {
           const total = Number(summary?.totals?.total||0);
           const ok = Number(summary?.totals?.ok||0);
-          const sli = Number(summary?.totals?.sli|| (total? ok/total : 1));
-          const top = (summary?.errors||[])[0] || null; // [status,count]
+          const sli = Number(summary?.totals?.sli || (total ? ok/total : 1));
+            const top = (summary?.errors||[])[0] || null;
           const errRate = 1 - sli;
-          // Low traffic => neutral
-          if (total < 30) return { text: 'Low traffic — limited signal', color:'#0b1220', border:'#1f2937', fg:'#93c5fd' };
-          // Healthy
-          if (sli >= 0.995 && errRate <= 0.005) return { text: 'SLA likely being met', color:'#073a2a', border:'#14532d', fg:'#34d399' };
-          if (sli >= 0.99 && errRate <= 0.02) return { text: 'Healthy — within target', color:'#073a2a', border:'#14532d', fg:'#34d399' };
-          // Specific conditions
-          if (top && String(top[0])==='429' && (top[1]/total)>=0.05) return { text: 'Rate limiting observed', color:'#3b2f07', border:'#92400e', fg:'#f59e0b' };
-          if (top && /^5\d\d$/.test(String(top[0])) && (top[1]/total)>=0.05) return { text: 'Server errors elevated', color:'#3a0e14', border:'#7f1d1d', fg:'#fb7185' };
-          // Aggregate thresholds
-          if (errRate >= 0.20) return { text: 'Error burst detected', color:'#3a0e14', border:'#7f1d1d', fg:'#fb7185' };
-          if (sli >= 0.985) return { text: 'SLA slightly degraded', color:'#3b2f07', border:'#92400e', fg:'#f59e0b' };
-          if (errRate >= 0.12) return { text: 'Elevated errors', color:'#3b2f07', border:'#92400e', fg:'#f59e0b' };
-          return { text: 'Minor blips', color:'#0b1220', border:'#1f2937', fg:'#93c5fd' };
-        }catch(_){ return null; }
+                if (total < 30) return { text:'Low traffic — limited signal', level:'low', color:'#0b1220', border:'#1f2937', fg:'#93c5fd' };
+                // High-priority patterns override (rate limiting / server errors) regardless of slight improvements
+                if (top && String(top[0])==='429' && (top[1]/total)>=0.05) return { text:'Rate limiting observed', level:'rate', color:'#3b2f07', border:'#92400e', fg:'#f59e0b' };
+                if (top && /^5\d\d$/.test(String(top[0])) && (top[1]/total)>=0.05) return { text:'Server errors elevated', level:'5xx', color:'#3a0e14', border:'#7f1d1d', fg:'#fb7185' };
+                // Derive severity via ordered thresholds list
+                for (const t of CALLOUT_THRESHOLDS) {
+                  if (t.test({ sli, errRate, total })) {
+                    return { text: t.label, level: t.level, color: t.color, border: t.border, fg: t.fg };
+                  }
+                }
+                return null;
+        } catch { return null; }
+      }
+      let legendBuilt = false;
+      function buildLegend(){
+        if (legendBuilt) return; legendBuilt = true;
+        const body = document.getElementById('calloutLegendBody'); if(!body) return;
+        const rows = [
+          {label:'SLA likely being met', note:'SLI ≥ 99.5%'},
+          {label:'Healthy — within target', note:'~99.0–99.5%'},
+          {label:'Minor blips', note:'98.0–99.0%'},
+          {label:'SLA slightly degraded', note:'98.5–99.0% (overrides minor)'},
+          {label:'Moderate degradation', note:'96.0–98.0%'},
+          {label:'Degraded — investigate', note:'90–96%'},
+          {label:'Severe degradation', note:'< 90% or ≥25% errors'},
+          {label:'Rate limiting observed', note:'429s ≥ 5%'},
+          {label:'Server errors elevated', note:'5xx ≥ 5%'}
+        ];
+        body.innerHTML = rows.map(r=>`<div style="display:flex;flex-direction:column;"><span>${r.label}</span><span class='muted'>${r.note}</span></div>`).join('');
       }
       function showCallout(summary){
         const el=document.getElementById('chatCallout'); if(!el){return;}
-        const c=computeCallout(summary); if(!c){ el.style.display='none'; return; }
-        el.textContent=c.text; el.style.display='block'; el.style.background=c.color; el.style.borderColor=c.border; el.style.color=c.fg;
+        const textSpan=document.getElementById('chatCalloutText');
+        const c=computeCallout(summary);
+        if(!c){ el.style.display='none'; return; }
+        const now = Date.now();
+        const prev = lastCalloutState.level;
+        const improving = prev && prev !== c.level; // change in level
+        // Debounce improvements (only if better severity) for 3 refresh intervals (approx 6s) except worsening which is immediate
+        const severityRank = lvl => ({optimal:0,healthy:1,minor:2,slight:3,moderate:4,degraded:5,severe:6,rate:5.5,'5xx':5.7,low:-1}[lvl] ?? 10);
+        let allow = true;
+        if (prev && c.level && severityRank(c.level) < severityRank(prev)) {
+          // improvement
+          if ((now - lastCalloutState.ts) < 6000) allow = false;
+        }
+        if(!allow){ return; }
+        lastCalloutState = { level: c.level, ts: now };
+        if(textSpan){ textSpan.textContent = c.text; }
+        el.style.display='block'; el.style.background=c.color; el.style.borderColor=c.border; el.style.color=c.fg;
+        buildLegend();
       }
       function hideCallout(){ const el=document.getElementById('chatCallout'); if(el){ el.style.display='none'; el.textContent=''; } }
       function buildSummaryText(summary){
@@ -844,51 +969,39 @@
           meta.textContent = meta.textContent || '';
         }catch(_){ /* ignore */ }
       }
+
       function drawChatDiagram(data){
         const canvas = document.getElementById('chatDiagramCanvas');
         const empty = document.getElementById('chatDiagramEmpty');
-        try{
+        try {
           chatDiagramLastData = data || { tables: [] };
           const modeSel = document.getElementById('chatDiagramMode');
           const mode = (modeSel?.value || 'auto').toLowerCase();
           const tables = chatDiagramLastData.tables || [];
           let src = null;
-          // Choose source table based on mode
           if (mode === 'auto') {
             const ctx = chatDiagramLastData.context || null;
-            if (ctx && ctx.table) {
-              src = tables.find(t=>t.name===ctx.table) || null;
-            }
+            if (ctx && ctx.table) src = tables.find(t=>t.name===ctx.table) || null;
             if (!src) {
-              // Fallback priority: popular_models -> errors_by_status -> latency_by_endpoint -> lat_percentiles -> tokens_summary
               src = tables.find(t=>t.name==='popular_models')
                  || tables.find(t=>t.name==='errors_by_status')
                  || tables.find(t=>t.name==='latency_by_endpoint')
                  || tables.find(t=>t.name==='lat_percentiles')
                  || tables.find(t=>t.name==='tokens_summary') || null;
             }
-          } else if (mode === 'errors') {
-            src = tables.find(t=>t.name==='errors_by_status') || null;
-          } else if (mode === 'latency') {
-            // Prefer richer latency_by_endpoint if present; else fall back to percentiles
-            src = tables.find(t=>t.name==='latency_by_endpoint') || tables.find(t=>t.name==='lat_percentiles') || null;
-          } else if (mode === 'tokens') {
-            src = tables.find(t=>t.name==='tokens_summary') || null;
-          }
+          } else if (mode === 'errors') src = tables.find(t=>t.name==='errors_by_status') || null;
+          else if (mode === 'latency') src = tables.find(t=>t.name==='latency_by_endpoint') || tables.find(t=>t.name==='lat_percentiles') || null;
+          else if (mode === 'tokens') src = tables.find(t=>t.name==='tokens_summary') || null;
 
-          // Normalize rows -> labels/values
           let labels = [], values = [];
           if (src && Array.isArray(src.rows)) {
             labels = src.rows.map(r => String(Array.isArray(r) ? r[0] : (r.key ?? '')));
             values = src.rows.map(r => Number(Array.isArray(r) ? r[1] : (r.value ?? 0)));
           }
-
           if (src && labels.length && values.length) {
             empty.style.display='none'; canvas.style.display='block'; drawChatBarChart(canvas, labels, values);
-          } else {
-            canvas.style.display='none'; empty.style.display='block';
-          }
-        }catch(_){ canvas.style.display='none'; empty.style.display='block'; }
+          } else { canvas.style.display='none'; empty.style.display='block'; }
+        } catch(_) { canvas.style.display='none'; empty.style.display='block'; }
       }
 
       // React to diagram mode changes using the last data
@@ -897,16 +1010,42 @@
           drawChatDiagram(chatDiagramLastData || { tables: [] });
         }
       });
+      document.addEventListener('click',(e)=>{
+        const btn = document.getElementById('calloutInfoBtn');
+        const legend = document.getElementById('calloutLegend');
+        if(!btn||!legend) return;
+        if(e.target===btn){ legend.style.display = legend.style.display==='none' || !legend.style.display ? 'block':'none'; e.stopPropagation(); return; }
+        if(!legend.contains(e.target)){ legend.style.display='none'; }
+      });
+
+      function setChatLoading(on){
+        try{
+          const sendBtn=document.getElementById('chatSend');
+          const loadEl=document.getElementById('chatLoading');
+          if(on){
+            if(sendBtn){ sendBtn.disabled=true; sendBtn.dataset._orig=sendBtn.textContent; sendBtn.textContent='Sending…'; sendBtn.style.opacity='0.6'; }
+            if(loadEl){ loadEl.style.display='flex'; }
+          } else {
+            if(sendBtn){ sendBtn.disabled=false; if(sendBtn.dataset._orig){ sendBtn.textContent=sendBtn.dataset._orig; } sendBtn.style.opacity='1'; }
+            if(loadEl){ loadEl.style.display='none'; }
+          }
+        }catch(_){ }
+      }
 
       async function chatSend(){
         const input=document.getElementById('chatInput');
-        const txt=input.value.trim(); if(!txt) return;
+        const txt=input.value.trim();
+        if(!txt){ setChatLoading(false); return; }
+        setChatLoading(true);
         const abs=absoluteRange(); const win=getWindow(); const now=Date.now();
         const from=abs?abs.from:(now-win*60000); const to=abs?abs.to:now;
         const ep=document.getElementById('endpointFilter').value;
     const llm=!!document.getElementById('chatUseLlm').checked;
     const replaceWithLLM=!!document.getElementById('chatReplace').checked;
+        const modelSel = document.getElementById('chatModel');
+        const chosenModel = modelSel ? (modelSel.value||'').trim() : '';
         const body={messages:[{role:'user',content:txt}],from, to, filters:{ endpoint: (ep&&ep!=='__all__')?ep:null }, llm};
+        if(chosenModel){ body.model = chosenModel; }
   const ansEl=document.getElementById('chatAnswer');
   const copyBtn=document.getElementById('copySummaryBtn');
   const narr=document.getElementById('chatNarrative'); if(narr){ narr.style.display='none'; narr.textContent=''; }
@@ -923,6 +1062,7 @@
           const reader = r.body.getReader(); const decoder = new TextDecoder();
           let ansBuffer = '';
           let leftover='';
+          let usedLLMStream = false; // track if LLM path engaged
       while(true){
             const {value, done} = await reader.read(); if(done) break;
             leftover += decoder.decode(value,{stream:true});
@@ -930,7 +1070,7 @@
             while((idx=leftover.indexOf('\n'))>=0){
               const line = leftover.slice(0,idx); leftover = leftover.slice(idx+1);
               if(!line.trim()) continue;
-        try{const obj=JSON.parse(line); if(obj.delta!=null){ ansEl.textContent += String(obj.delta); }
+        try{const obj=JSON.parse(line); if(obj.delta!=null){ ansBuffer += String(obj.delta); ansEl.textContent += String(obj.delta); }
                 if(obj.done){
                   if(obj.summary){
                     if(replaceWithLLM && obj.usedLLM && obj.narrative){
@@ -949,7 +1089,7 @@
                   }
           if(obj.data){ chatDiagramLastData = obj.data; drawChatDiagram(chatDiagramLastData); }
           if(!obj.summary && obj.narrative){ const n=document.getElementById('chatNarrative'); if(n){ n.innerHTML = obj.usedLLM ? mdToHtml(obj.narrative) : mdEscapeHtml(obj.narrative); n.style.display='block'; } }
-          if(obj.usedLLM){ const b=document.getElementById('llmBadge'); if(b){ b.style.display='inline-block'; } }
+          if(obj.usedLLM){ usedLLMStream = true; const b=document.getElementById('llmBadge'); if(b){ b.style.display='inline-block'; } }
           const metaEl=document.getElementById('chatAnswerMeta'); if(metaEl){
             const tried = obj.llmTried ? 'tried' : 'not tried';
             const used = obj.usedLLM ? 'used' : 'not used';
@@ -961,6 +1101,13 @@
               }catch(_){ /* ignore */ }
             }
           }
+          // Post-process: if LLM used and we didn't replace with narrative earlier, render accumulated buffer as Markdown
+          try{
+            if(usedLLMStream && !(replaceWithLLM && ansEl.innerHTML)){
+              ansEl.innerHTML = mdToHtml(ansBuffer.trim());
+            }
+          }catch(_){ }
+          setChatLoading(false);
           return;
         }catch(_){ /* fallback to non-stream */ }
         try{
@@ -993,7 +1140,9 @@
             const status = (!j.usedLLM && j.llmStatus) ? ` • status ${j.llmStatus}` : '';
             metaEl.textContent = `LLM ${used} (${tried})${model}${status}`;
           }
-        }catch(e){ansEl.textContent='Chat failed';}
+          setChatLoading(false);
+        }catch(e){ansEl.textContent='Chat failed'; setChatLoading(false);}
+        finally { setChatLoading(false); }
       }
       document.getElementById('chatSend').addEventListener('click',chatSend);
       document.getElementById('chatClear').addEventListener('click',()=>{document.getElementById('chatInput').value='';document.getElementById('chatAnswer').textContent='—';document.getElementById('chatCitations').textContent='—';});
@@ -1008,7 +1157,32 @@
   (function initKey(){
     const el=document.getElementById('chatKey');
     el.value=getKey();
-    el.addEventListener('change',()=>setKey(el.value));
+    el.addEventListener('change',()=>{ setKey(el.value); window.__simTriedAutoStart=false; const st=document.getElementById('simAutoStatus'); if(st){ st.style.display='inline-block'; st.textContent='Re-checking simulator…'; } setTimeout(refreshSimButton,250); });
+  })();
+  // Populate model dropdown from /config
+  (async function initModels(){
+    try{
+      const sel=document.getElementById('chatModel'); if(!sel) return;
+      const r=await fetch('/config',{cache:'no-store'}); if(!r.ok) return; const j=await r.json();
+      const models = Array.isArray(j.models)?j.models:[];
+      const saved = (localStorage.getItem('obs_chat_model')||'').trim();
+      models.forEach(m=>{ const opt=document.createElement('option'); opt.value=m; opt.textContent=m; sel.appendChild(opt); });
+      if(saved && models.includes(saved)) sel.value=saved; else if(sel.options.length>0) { /* keep default */ }
+      sel.addEventListener('change',()=>{ try{ localStorage.setItem('obs_chat_model', sel.value||''); }catch(_){ } });
+    }catch(_){ }
+  })();
+  // Default enable LLM checkboxes unless user disabled previously
+  (function initLlmPrefs(){
+    try{
+      const useEl=document.getElementById('chatUseLlm');
+      const repEl=document.getElementById('chatReplace');
+      const storedUse=localStorage.getItem('obs_chat_use_llm');
+      const storedRep=localStorage.getItem('obs_chat_replace_llm');
+      if(storedUse==null){ useEl.checked=true; } else { useEl.checked = storedUse==='1'; }
+      if(storedRep==null){ repEl.checked=true; } else { repEl.checked = storedRep==='1'; }
+      useEl.addEventListener('change',()=>{ try{ localStorage.setItem('obs_chat_use_llm', useEl.checked?'1':'0'); }catch(_){ } });
+      repEl.addEventListener('change',()=>{ try{ localStorage.setItem('obs_chat_replace_llm', repEl.checked?'1':'0'); }catch(_){ } });
+    }catch(_){ }
   })();
   async function runOp(url, method='GET'){
     const msg=document.getElementById('chatOpsMsg');msg.textContent='…';
@@ -1031,12 +1205,32 @@
     try{
       const headers={};const k=getKey();if(k) headers['x-api-key']=k;
       const r=await fetch('/logs/sim/status',{headers,cache:'no-store'});
-      if(!r.ok){ if(r.status===404){ simStatusSupported=false; } if(r.status===401){ const m=document.getElementById('chatOpsMsg'); m.textContent='Unauthorized: set ingest key'; setTimeout(()=>{m.textContent='';},1500);} return; }
+      if(!r.ok){
+        if(r.status===404){ simStatusSupported=false; }
+        if(r.status===401){
+          const m=document.getElementById('chatOpsMsg'); m.textContent='Unauthorized: set ingest key'; setTimeout(()=>{m.textContent='';},1500);
+          const st=document.getElementById('simAutoStatus'); if(st){ st.style.display='inline-block'; st.textContent='Simulator blocked: missing or invalid ingest key'; }
+        }
+        return;
+      }
       const j=await r.json();
       const btn=document.getElementById('chatToggleSim');
       if(!btn) return;
       if(j.running){ btn.textContent='Stop simulator'; btn.classList.remove('btn-primary'); btn.classList.add('btn-danger'); btn.dataset.state='running'; }
       else { btn.textContent='Start log simulator'; btn.classList.remove('btn-danger'); btn.classList.add('btn-primary'); btn.dataset.state='stopped'; }
+      // Auto-start if stopped (single attempt) and authorization OK
+      if(!j.running){
+        try{
+          const autoFlag = window.__simTriedAutoStart || false;
+          if(!autoFlag){
+            window.__simTriedAutoStart = true;
+            const res = await fetch('/logs/sim/start',{method:'POST',headers});
+            if(res.ok){ const st=document.getElementById('simAutoStatus'); if(st){ st.style.display='none'; st.textContent=''; } setTimeout(refreshSimButton,400); }
+            else { const st=document.getElementById('simAutoStatus'); if(st){ st.style.display='inline-block'; st.textContent='Auto-start failed ('+res.status+')'; } }
+          }
+        }catch(_){ }
+      }
+        const st=document.getElementById('simAutoStatus'); if(st){ st.style.display='none'; st.textContent=''; }
     }catch(_){ /* ignore */ }
   }
   async function toggleSim(){
