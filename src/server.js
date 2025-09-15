@@ -28,7 +28,8 @@ if (process.env.NODE_ENV !== 'test' && enableDb) {
     }
   // Ensure synthetics schema
   try { dbMod.ensureSynthSchema?.(db); } catch(e) { console.warn('[db] synth schema init failed', e.message); }
-    console.log('[db] sqlite ready');
+  // Logging helper initialized below; temporary console fallback will be replaced once log object defined
+  console.log('[db] sqlite ready');
   } catch (e) {
   dbInitError = e;
   console.warn('[db] sqlite init failed', e.message);
@@ -41,15 +42,19 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const app = express();
 app.use(express.json({ limit: '1mb' }));
 
-// Basic request logger for debugging (method, path, status, duration)
-app.use((req, res, next) => {
-  const t0 = Date.now();
-  res.on('finish', () => {
-    const ms = Date.now() - t0;
-    console.log(`[http] ${res.statusCode} ${req.method} ${req.originalUrl} ${ms}ms`);
-  });
-  next();
-});
+// --- Logging setup (LOG_LEVEL: error|warn|info|debug) ---
+const LOG_LEVEL = (process.env.LOG_LEVEL || 'info').toLowerCase();
+const LEVELS = { error:0, warn:1, info:2, debug:3 };
+function should(level){ return (LEVELS[level] ?? 2) <= (LEVELS[LOG_LEVEL] ?? 2); }
+const log = {
+  error: (...a)=>{ if(should('error')) console.error(...a); },
+  warn:  (...a)=>{ if(should('warn'))  console.warn(...a); },
+  info:  (...a)=>{ if(should('info'))  console.log(...a); },
+  debug: (...a)=>{ if(should('debug')) console.log(...a); },
+};
+// Replace earlier bootstrap console logs with leveled versions (cannot retroactively change already emitted lines)
+// Request logger: only log successes at debug level; always log 4xx/5xx at warn.
+app.use((req,res,next)=>{ const start=Date.now(); res.on('finish',()=>{ const ms=Date.now()-start; if(res.statusCode>=400) log.warn(`[http] ${res.statusCode} ${req.method} ${req.originalUrl} ${ms}ms`); else if(should('debug')) log.debug(`[http] ${res.statusCode} ${req.method} ${req.originalUrl} ${ms}ms`); }); next(); });
 
 // Metrics store & OTel init
 export const store = new MetricsStore({ capacity: 1000 });
@@ -122,7 +127,10 @@ const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const region = process.env.PROBE_REGION || 'us-west-1';
 const probe = new ProbeRunner({ store, intervalSec, model, db, persist: !!db });
 export { probe };
-if (process.env.NODE_ENV !== 'test') probe.start();
+// Auto-start probe only outside test to avoid external network calls interfering with test runner
+if (process.env.NODE_ENV !== 'test') {
+  try { probe.start(); } catch(_){ }
+}
 
 // Prevent caching of API responses
 app.use((req, res, next) => {
@@ -319,7 +327,7 @@ async function startLogSimulator(res){
   logSimTimer = setInterval(()=>{
     try { const batch=generateSyntheticLogs(5+Math.floor(Math.random()*20)); insertLogs(db,batch); } catch(e){ console.warn('[logs/sim]', e.message); }
   }, LOG_SIM_INTERVAL_MS);
-  console.log(`[logs/sim] started ${LOG_SIM_INTERVAL_MS}ms`);
+  log.info(`[logs/sim] started ${LOG_SIM_INTERVAL_MS}ms`);
   return res.json({ started:true, intervalMs: LOG_SIM_INTERVAL_MS });
 }
 app.get('/logs/sim/start', requireIngestKey, async (req,res)=>{
@@ -338,7 +346,7 @@ app.post('/logs/sim/start', requireIngestKey, async (req,res)=>{
 
 app.get('/logs/sim/stop', requireIngestKey, (req,res)=>{
   noStore(res);
-  if (logSimTimer){ clearInterval(logSimTimer); logSimTimer=null; console.log('[logs/sim] stopped'); }
+  if (logSimTimer){ clearInterval(logSimTimer); logSimTimer=null; log.info('[logs/sim] stopped'); }
   res.json({ stopped:true });
 });
 
@@ -353,7 +361,7 @@ if (LOG_SIM_ENABLED && process.env.NODE_ENV !== 'test') {
     if (!enableDb || !db) return; if (logSimTimer) return;
     const { insertLogs } = await import('./db.js');
     logSimTimer = setInterval(()=>{ try{ insertLogs(db, generateSyntheticLogs(10)); }catch{} }, LOG_SIM_INTERVAL_MS);
-    console.log(`[logs/sim] auto-started ${LOG_SIM_INTERVAL_MS}ms`);
+  log.debug(`[logs/sim] auto-started ${LOG_SIM_INTERVAL_MS}ms`);
   }, 1500);
 }
 
@@ -369,7 +377,7 @@ app.post('/ai/index/logs', async (req,res)=>{
   if (!ENABLE_AI) return res.status(400).json({ error:'ENABLE_AI=1 required' });
   if (!enableDb || !db) return res.status(400).json({ error:'ENABLE_DB=1 required' });
   const apiKey = process.env.OPENAI_API_KEY; if (!apiKey) return res.status(400).json({ error:'OPENAI_API_KEY required' });
-  console.log('[ai/index/logs] starting');
+  log.info('[ai/index/logs] starting');
   const limit = Math.min(64, Number(req.query.limit || 32));
   const sinceTs = req.query.since ? Number(req.query.since) : null;
   try{
@@ -401,17 +409,17 @@ app.get('/ai/index/auto/start', requireIngestKey, async (req,res)=>{
       const dim = vecs[0]?.length || 0;
       const trx = db.transaction((items, embeddings)=>{ items.forEach((r,i)=> upsertLogEmbedding(db, r.id, embeddings[i], dim)); });
       trx(rows, vecs);
-      console.log(`[ai/index/auto] indexed ${rows.length}`);
+  log.debug(`[ai/index/auto] indexed ${rows.length}`);
     }catch(e){ console.warn('[ai/index/auto] tick failed', e.message); }
   };
   embedIndexTimer = setInterval(tick, EMB_INDEX_INTERVAL_MS);
-  console.log(`[ai/index/auto] started ${EMB_INDEX_INTERVAL_MS}ms`);
+  log.info(`[ai/index/auto] started ${EMB_INDEX_INTERVAL_MS}ms`);
   res.json({ started:true, intervalMs: EMB_INDEX_INTERVAL_MS });
 });
 
 app.get('/ai/index/auto/stop', requireIngestKey, (req,res)=>{
   noStore(res);
-  if (embedIndexTimer){ clearInterval(embedIndexTimer); embedIndexTimer=null; console.log('[ai/index/auto] stopped'); }
+  if (embedIndexTimer){ clearInterval(embedIndexTimer); embedIndexTimer=null; log.info('[ai/index/auto] stopped'); }
   res.json({ stopped:true });
 });
 
@@ -905,7 +913,7 @@ app.get('/synthetics/:id(\\d+)', async (req,res)=>{
 async function runSyntheticMonitor(spec, runId){
   const logs = [];
   const stepsMeta = [];
-  const log = (m)=> { const entry = { ts: Date.now(), msg: m }; logs.push(entry); try { console.log(`[synth:${runId}] ${m}`); } catch(_){} };
+  const logSynth = (m)=> { const entry = { ts: Date.now(), msg: m }; logs.push(entry); try { log.debug(`[synth:${runId}] ${m}`); } catch(_){} };
   await ensureSynthDir();
   const fileRel = `synth/run-${runId}.png`;
   const fileAbs = path.join(__dirname, '../public', fileRel);
@@ -1205,19 +1213,90 @@ app.get('/ai/summary', async (req, res) => {
   }
 });
 
+// ---- Centralized helper for richer LLM prompts (sections + recommendations) ----
+function buildLLMPromptComponents(opts) {
+  const {
+    wantPopularityModel, wantJoke, userMsg, historyBlock,
+    from, to, endpoint, total, ok, sli, p50, p95, p99,
+    topStatuses, logs, popularityFacts
+  } = opts;
+  // System prompt variants
+  if (wantJoke) {
+    return {
+      sys: `Tell ONE short, clean, family-friendly programming joke. No preface, just the joke in one or two lines.`,
+      ctx: `${historyBlock}User question: ${userMsg || '(none)'}\n`
+    };
+  }
+  if (wantPopularityModel) {
+    const sys = `You are an SRE / analytics assistant. Produce a concise (<180 words) structured answer about model usage and reliability.
+Sections (omit if empty): Reliability, Models, Errors, Latency, Recommendations.
+Rules:
+- Do not invent metrics beyond those given.
+- In Models: highlight top model share %, list next few compactly.
+- Recommendations: 1-3 actionable bullets (e.g. investigate 429 spikes, optimize slow endpoints, reduce tail latency) referencing concrete data.
+- Use plain text (no Markdown code fences) and keep each section label followed by a colon.
+- Avoid repeating the exact same numbers in multiple sections unless essential.
+- Never exceed ~180 words total.`;
+    const ctx = `${historyBlock}`+
+      `Window: ${new Date(from).toISOString()} to ${new Date(to).toISOString()}\n`+
+      `Endpoint: ${endpoint||'all'}\n`+
+      `Total: ${total}\nOK: ${ok}\nSLI: ${(sli*100).toFixed(2)}%\nLatency: p50=${p50??'–'}ms p95=${p95??'–'}ms p99=${p99??'–'}ms\nTop statuses: ${topStatuses||'—'}\n`+
+      (popularityFacts? `${popularityFacts}\n` : '')+
+      `Latest user question: ${userMsg || '(none)'}\n`+
+      `Top logs:\n${logs.slice(0,5).map(l=>`[${new Date(l.ts).toISOString()}] ${l.status} ${l.endpoint} ${l.model||''} ${l.region||''} ${(l.text||'').slice(0,160)}`).join('\n')}`;
+    return { sys, ctx };
+  }
+  // Default reliability-focused prompt
+  const sys = `You are an SRE reliability assistant. Produce a concise (<180 words) structured narrative about the system's recent performance.
+Sections (omit if empty): Reliability, Latency, Errors, Models, Recommendations.
+Rules:
+- Use each section label followed by a colon.
+- Summarize SLI and major shifts; highlight tail latency if p95>500ms or p99>1000ms.
+- In Errors: group by status codes; note if 429 or 5xx dominate.
+- If model usage is varied, include Models with top 1-3 models and relative shares.
+- Provide 1-3 bullet Recommendations each starting with a verb (Investigate, Optimize, Tune, Cache, Retry, Reduce, Add alert, etc.).
+- Do NOT repeat identical numeric tuples across multiple sections; reference numbers once.
+- Never fabricate data. If little data, say so.
+- Keep total output under ~180 words, no markdown formatting beyond simple section labels and bullets (use '-' for bullets).`;
+  const ctx = `${historyBlock}`+
+    `Window: ${new Date(from).toISOString()} to ${new Date(to).toISOString()}\n`+
+    `Endpoint: ${endpoint||'all'}\n`+
+    `Total: ${total}\nOK: ${ok}\nSLI: ${(sli*100).toFixed(2)}%\nLatency: p50=${p50??'–'}ms p95=${p95??'–'}ms p99=${p99??'–'}ms\nTop statuses: ${topStatuses||'—'}\n`+
+    `Latest user question: ${userMsg || '(none)'}\n`+
+    `Top logs:\n${logs.slice(0,5).map(l=>`[${new Date(l.ts).toISOString()}] ${l.status} ${l.endpoint} ${l.model||''} ${l.region||''} ${(l.text||'').slice(0,160)}`).join('\n')}`;
+  return { sys, ctx };
+}
+
 // ===== Chat endpoint (non-stream PoC) =====
 app.post('/ai/chat', async (req, res) => {
   try {
     const body = req.body || {};
     const messages = Array.isArray(body.messages) ? body.messages : [];
     const userMsg = messages.length ? messages[messages.length - 1].content || '' : String(body.query || '');
+    // Build a bounded multi-turn conversation history (exclude final user message)
+    let historyBlock = '';
+    if (messages.length > 1) {
+      const prior = messages.slice(0, -1).filter(m=>m && typeof m.content === 'string');
+      const recent = prior.slice(-12); // cap number of turns to avoid token bloat
+      const formatted = recent.map((m,i)=>{
+        const role = (m.role||'user').toLowerCase();
+        if (role === 'system') return null; // skip system for now
+        const tag = role === 'assistant' ? 'assistant' : 'user';
+        let content = m.content.trim();
+        if (content.length > 500) content = content.slice(0,500)+"…"; // truncate long entries
+        return `${i+1}. ${tag}: ${content}`;
+      }).filter(Boolean);
+      if (formatted.length) {
+        historyBlock = `Conversation so far (most recent last):\n${formatted.join('\n')}\n---\n`;
+      }
+    }
     const endpoint = body.filters?.endpoint || null;
     const modelF = body.filters?.model || null;
     const regionF = body.filters?.region || null;
     const now = Date.now();
     const from = body.from ? Number(body.from) : (now - 60*60000);
     const to = body.to ? Number(body.to) : now;
-  console.log('[ai/chat]', { llm: !!body.llm, endpoint, from, to, promptLen: (userMsg||'').length });
+  if (should('debug')) log.debug('[ai/chat]', { llm: !!body.llm, endpoint, from, to, promptLen: (userMsg||'').length });
 
     // Metrics summary
     const mReq = { query: { from: String(from), to: String(to), endpoint: endpoint || '' } };
@@ -1232,9 +1311,13 @@ app.post('/ai/chat', async (req, res) => {
     const p50=q(lat,0.5), p95=q(lat,0.95), p99=q(lat,0.99);
     const byStatus = rows.reduce((acc,r)=>{ const k=String(r.status??(r.ok?200:0)); acc[k]=(acc[k]||0)+1; return acc; },{});
 
-    // --- Intent detection (direct metric Q&A) ---
-    // Slowest endpoint intent: user explicitly asks which endpoint is the slowest (latency focused question)
-    const lowerQ = String(userMsg||'').toLowerCase();
+  // --- Intent detection (direct metric Q&A + chart) ---
+  // Slowest endpoint intent: user explicitly asks which endpoint is the slowest (latency focused question)
+  const lowerQ = String(userMsg||'').toLowerCase();
+  // Broaden chart intent detection (allow common misspellings and concatenations like piechart, piechat)
+  const chartIntent = /(pie\s*chart|piechart|piechat|pie|bar|chart|graph|visual|visualize|plot)/.test(lowerQ);
+  const observationIntent = /(observation|observations|insight|insights|what\s+do\s+you\s+see|what's\s+your\s+take|pattern|trends?)/.test(lowerQ);
+  let chartSpec = null; // will attach to response if built
     const slowestIntent = /(which|what)?\s*(is\s*)?(the\s*)?slow(est)?\s+endpoint/.test(lowerQ) || /slowest\s+endpoint/.test(lowerQ);
     let directAnswer = null; let directIntent = null;
     if (slowestIntent) {
@@ -1417,26 +1500,80 @@ app.post('/ai/chat', async (req, res) => {
         ? [popularityBlock, details.join(' • '), logSnippet].filter(Boolean).join('\n')
         : [baseLine, details.join(' • '), logSnippet].filter(Boolean).join('\n');
     }
+    // Build chartSpec if user appeared to ask for a chart or visualization
+    if (!chartSpec && chartIntent) {
+      const wantErrorsChart = /error|errors|fail|fails|failure|5\d\d|4\d\d/.test(lowerQ);
+      const wantLatencyChart = /latency|slow|p95|p99|perf|performance/.test(lowerQ) || /endpoint/.test(lowerQ);
+      const wantLatencyPie = wantLatencyChart && /(pie|piechart|piechat)/.test(lowerQ);
+      if (wantErrorsChart) {
+        const entries = Object.entries(byStatus).sort((a,b)=>b[1]-a[1]).slice(0,8);
+        chartSpec = entries.length
+          ? { type: 'pie', title: 'Errors by Status', series: [{ name: 'status', labels: entries.map(e=>e[0]), values: entries.map(e=>e[1]) }], meta: { source: 'errors_by_status' } }
+          : { type: 'pie', title: 'Errors by Status', series: [{ name: 'status', labels: [], values: [] }], meta: { source: 'errors_by_status', empty: true } };
+      } else if (wantLatencyPie) {
+        // Build latency distribution buckets for pie chart
+        const buckets = [
+          { label: '<100ms', test: v=>v<100 },
+          { label: '100-300ms', test: v=>v>=100 && v<300 },
+          { label: '300-700ms', test: v=>v>=300 && v<700 },
+          { label: '700-1500ms', test: v=>v>=700 && v<1500 },
+          { label: '>=1500ms', test: v=>v>=1500 }
+        ];
+        const okLat = rows.filter(r=>r.ok && typeof r.latencyMs==='number').map(r=>r.latencyMs);
+        const values = buckets.map(b=> okLat.filter(v=>b.test(v)).length );
+        chartSpec = { type: 'pie', title: 'Latency Distribution', series: [{ name: 'latency_bucket', labels: buckets.map(b=>b.label), values }], meta: { source: 'latency_buckets' } };
+      } else if (wantLatencyChart) {
+        const groups = new Map();
+        for (const r of rows) { if (!r.ok || typeof r.latencyMs !== 'number') continue; const ep = r.endpoint||'(unknown)'; const arr = groups.get(ep)||[]; arr.push(r.latencyMs); groups.set(ep, arr); }
+        const quant = (arr,q)=>{ if(!arr.length) return 0; const a=arr.slice().sort((x,y)=>x-y); const pos=(a.length-1)*q; const b=Math.floor(pos); const rest=pos-b; return a[b+1]!==undefined ? a[b]+rest*(a[b+1]-a[b]) : a[b]; };
+        const stats = Array.from(groups.entries()).map(([ep,arr])=>({ ep, p95: Math.round(quant(arr,0.95)||0) })).sort((a,b)=>b.p95-a.p95).slice(0,8);
+        chartSpec = stats.length
+          ? { type: 'bar', title: 'Endpoint p95 latency (ms)', x: stats.map(s=>s.ep), y: stats.map(s=>s.p95), meta: { source: 'latency_by_endpoint', metric: 'p95_latency_ms' } }
+          : { type: 'bar', title: 'Endpoint p95 latency (ms)', x: [], y: [], meta: { source: 'latency_by_endpoint', metric: 'p95_latency_ms', empty: true } };
+      }
+    }
     // Build a friendly non-LLM narrative
     function buildNarrative(){
       const sliPct = (sli*100).toFixed(2);
-      const health = sli>=0.995? 'SLA likely being met' : sli>=0.985? 'SLA slightly degraded' : 'SLA degraded';
-      const errTopEntry = Object.entries(byStatus).sort((a,b)=>b[1]-a[1])[0];
+      const health = sli>=0.995? 'Excellent reliability' : sli>=0.985? 'Good but slightly degraded' : sli>=0.95? 'Noticeably degraded' : 'Significantly degraded';
+      const errSorted = Object.entries(byStatus).sort((a,b)=>b[1]-a[1]);
+      const errTopEntry = errSorted[0];
+      const errSecond = errSorted[1];
       let errMsg = '';
       if (errTopEntry){
         const [code, cnt] = errTopEntry; const rate = total? ((cnt/total)*100).toFixed(1) : '0.0';
-        if (String(code)==='429') errMsg = `Rate limiting (${rate}% of requests) is the top error.`;
-        else if (/^5\d\d$/.test(String(code))) errMsg = `Server errors ${code} are elevated (${rate}%).`;
-        else if (Number(code)>=400) errMsg = `Client errors ${code} observed (${rate}%).`;
+        if (String(code)==='429') errMsg = `Rate limiting spikes (429) comprise ${rate}% of requests—throttle or retry tuning may be needed.`;
+        else if (/^5\d\d$/.test(String(code))) errMsg = `Server error ${code} leads with ${rate}% share—investigate backend regressions.`;
+        else if (Number(code)>=400) errMsg = `Client error ${code} dominates (${rate}%), suggesting validation or request-shape issues.`;
       }
-      const latMsg = (p95!=null && p99!=null) ? `Latency is stable with p95 ${p95} ms and p99 ${p99} ms.` : '';
-      let extra='';
-      if (wantPopularityModel && popularityBlock) extra = popularityBlock;
-      else if (wantLatency){
-        const slowest = rows.filter(r=>r.ok).sort((a,b)=>b.latencyMs-a.latencyMs).slice(0,2).map(r=>`${r.latencyMs} ms ${r.endpoint}`).join('; ');
-        if (slowest) extra = `Slowest successful calls: ${slowest}.`;
-      } else if (wantError && errTopEntry){ extra = `Top statuses: ${topStatuses}.`; }
-      const parts = [ `${health} (SLI ${sliPct}%).`, latMsg, errMsg, extra ].filter(Boolean);
+      let errFollow='';
+      if (errSecond){
+        const [code2, cnt2] = errSecond; const rate2 = total? ((cnt2/total)*100).toFixed(1):'0.0';
+        errFollow = ` Next error: ${code2} (${rate2}%).`;
+      }
+      const latMsg = (p95!=null && p99!=null)
+        ? `Latency tail: p95 ${p95} ms / p99 ${p99} ms (p50 ${p50??'–'} ms).`
+        : '';
+      // Highlight slowest endpoints (top 2) if latency focus
+      let slowDesc='';
+      if (wantLatency) {
+        const slowest = rows.filter(r=>r.ok).sort((a,b)=>b.latencyMs-a.latencyMs).slice(0,2).map(r=>`${r.endpoint} ${r.latencyMs}ms`).join(', ');
+        if (slowest) slowDesc = `Slowest recent calls: ${slowest}.`;
+      }
+      let popularityDesc='';
+      if (wantPopularityModel && popularityBlock) popularityDesc = popularityBlock;
+      // Observation style bullet list when explicitly asked for observations / insights
+      if (observationIntent) {
+        const bullets = [];
+        bullets.push(`Reliability: ${health} (SLI ${sliPct}%).`);
+        if (latMsg) bullets.push(latMsg);
+        if (errMsg) bullets.push(errMsg + errFollow);
+        if (slowDesc) bullets.push(slowDesc);
+        if (popularityDesc) bullets.push(popularityDesc);
+        if (!bullets.length) bullets.push('No significant signals detected in the selected range.');
+        return bullets.map(b=>'• '+b).join('\n');
+      }
+      const parts = [ `${health} (SLI ${sliPct}%).`, latMsg, errMsg+errFollow, slowDesc, popularityDesc ].filter(Boolean);
       return parts.join(' ');
     }
     // Off-topic lightweight handling (no LLM): return a short, clean joke when explicitly asked
@@ -1457,13 +1594,8 @@ app.post('/ai/chat', async (req, res) => {
   if (useLLM) {
       try {
         llmTried = true;
-        const sys = wantPopularityModel
-          ? `You are an SRE/analytics assistant. Answer the user's question directly using the provided context. If they ask for the most used model, identify the top model by count, include its share %, and list the next few. Keep it concise and explanatory.`
-          : (wantJoke
-            ? `Tell ONE short, clean, family-friendly programming joke. No preface, just the joke in one or two lines.`
-            : `You are an SRE assistant. Summarize reliability for the given time window. Include: total, SLI%, p50/p95/p99, top error statuses, and a short recommendation. Keep it concise.`);
-        // Prepare optional popularity facts for the LLM
-        let popularityFacts = '';
+        // Aggregate popularity facts if needed for central builder
+        let popularityFacts='';
         if (wantPopularityModel) {
           try {
             let facts = [];
@@ -1476,23 +1608,18 @@ app.post('/ai/chat', async (req, res) => {
               facts = rowsM.map(r=>`${r.key}: ${r.c}`).join(', ');
             }
             if (!facts) {
-              const counts = rows.reduce((acc,r)=>{ const k=r.model||'(unknown)'; acc[k]=(acc[k]||0)+1; return acc; },{});
+              const counts = rows.reduce((acc,r)=>{ const k=r.model||'(unknown)'; acc[k] = (acc[k]||0)+1; return acc; },{});
               const ordered = Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([k,v])=>`${k}: ${v}`).join(', ');
               facts = ordered;
             }
             popularityFacts = `Model usage (count): ${facts}`;
           } catch {}
         }
-        const ctx = wantJoke
-          ? `User question: ${userMsg || '(none)'}\n`
-          : (
-            `Window: ${new Date(from).toISOString()} to ${new Date(to).toISOString()}\n`+
-            `Endpoint: ${endpoint||'all'}\n`+
-            (wantPopularityModel? `${popularityFacts}\n` :
-              `Total: ${total}\nOK: ${ok}\nSLI: ${(sli*100).toFixed(2)}%\nLatency: p50=${p50??'–'}ms p95=${p95??'–'}ms p99=${p99??'–'}ms\nTop statuses: ${topStatuses||'—'}\n`)+
-            `User question: ${userMsg || '(none)'}\n`+
-            `Top logs: ${logs.slice(0,5).map(l=>`[${new Date(l.ts).toISOString()}] ${l.status} ${l.endpoint} ${l.model||''} ${l.region||''} ${String(l.text||'').slice(0,160)}`).join('\n')}`
-          );
+        const { sys, ctx } = buildLLMPromptComponents({
+          wantPopularityModel, wantJoke, userMsg, historyBlock,
+          from, to, endpoint, total, ok, sli, p50, p95, p99,
+          topStatuses, logs, popularityFacts
+        });
   // Allow per-request override (body.model) if provided and in allowlist; else env; else default
   const MODEL_ALLOWLIST = new Set([
     'gpt-4.1-mini','gpt-4.1','gpt-4o-mini','gpt-4o','gpt-4o-realtime-preview',
@@ -1512,7 +1639,7 @@ app.post('/ai/chat', async (req, res) => {
     if (isG5) {
       payload = { model: modelName, input:[ { role:'system', content:[{ type:'input_text', text: sys }] }, { role:'user', content:[{ type:'input_text', text: ctx }] } ] };
     } else {
-      payload = { model: modelName, input:[ { role:'system', content:[{ type:'input_text', text: sys }] }, { role:'user', content:[{ type:'input_text', text: ctx }] } ], max_output_tokens: 300, temperature: 0.2 };
+  payload = { model: modelName, input:[ { role:'system', content:[{ type:'input_text', text: sys }] }, { role:'user', content:[{ type:'input_text', text: ctx }] } ], max_output_tokens: 450, temperature: 0.2 };
     }
     return fetch('https://api.openai.com/v1/responses', { method:'POST', headers:{ 'Content-Type':'application/json','Authorization':`Bearer ${process.env.OPENAI_API_KEY}` }, body: JSON.stringify(payload) });
   }
@@ -1522,7 +1649,7 @@ app.post('/ai/chat', async (req, res) => {
     if (isG5) {
       payload = { model: modelName, messages:[ { role:'system', content: sys }, { role:'user', content: ctx } ] }; // minimal payload
     } else {
-      payload = { model: modelName, messages:[ { role:'system', content: sys }, { role:'user', content: ctx } ], max_tokens: 300, temperature: 0.2 };
+  payload = { model: modelName, messages:[ { role:'system', content: sys }, { role:'user', content: ctx } ], max_tokens: 450, temperature: 0.2 };
     }
     return fetch('https://api.openai.com/v1/chat/completions', { method:'POST', headers:{ 'Content-Type':'application/json','Authorization':`Bearer ${process.env.OPENAI_API_KEY}` }, body: JSON.stringify(payload) });
   }
@@ -1568,7 +1695,7 @@ app.post('/ai/chat', async (req, res) => {
         } catch(eFb){ llmFallback = { ...(llmFallback||{}), finalFallbackError: String(eFb?.message||eFb) }; }
       }
     }
-    console.log('[ai/chat] LLM', { tried: llmTried, used: usedLLM, status: llmStatus, model: llmModel, route: llmRoute, fallback: llmFallback||null });
+  if (should('info')) log.info('[ai/chat] LLM', { tried: llmTried, used: usedLLM, status: llmStatus, model: llmModel, route: llmRoute, fallback: llmFallback||null });
   } catch(eAll) {
     llmFallback = { ...(llmFallback||{}), outerError: String(eAll?.message||eAll) };
     console.warn('[ai/chat] LLM failed', String(eAll?.message||eAll));
@@ -1610,7 +1737,12 @@ app.post('/ai/chat', async (req, res) => {
   ].concat(dataTables), context: dataContext };
   const narrative = (usedLLM && answer) ? answer : (directIntent==='slowest_endpoint' ? directAnswer : buildNarrative());
   // Expose debug routing metadata to help diagnose 400s on certain model families
-  res.json({ answer, narrative, citations, evidence, data, summary, usedLLM, llmModel, llmTried, llmStatus, llmRoute, llmFallback });
+  try {
+    const dbgErrors = /error|errors|fail|fails|failure|5\d\d|4\d\d/.test(lowerQ);
+    const dbgLatency = /latency|slow|p95|p99|perf|performance/.test(lowerQ) || /endpoint/.test(lowerQ);
+  if (should('debug')) log.debug('[ai/chat][debug]', { lowerQ, chartIntent, dbgErrors, dbgLatency, hasChartSpec: !!chartSpec, chartType: chartSpec && chartSpec.type });
+  } catch(_) { /* ignore */ }
+  res.json({ answer, narrative, citations, evidence, data, summary, usedLLM, llmModel, llmTried, llmStatus, llmRoute, llmFallback, chartSpec });
   // Clients not using these fields can ignore; shape additive (non-breaking)
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -1625,11 +1757,26 @@ app.post('/ai/chat/stream', async (req, res) => {
     const body = req.body || {};
     const messages = Array.isArray(body.messages) ? body.messages : [];
     const userMsg = messages.length ? messages[messages.length - 1].content || '' : String(body.query || '');
+    // Build bounded multi-turn history (exclude final user message)
+    let historyBlock = '';
+    if (messages.length > 1) {
+      const prior = messages.slice(0,-1).filter(m=>m && typeof m.content === 'string');
+      const recent = prior.slice(-12);
+      const formatted = recent.map((m,i)=>{
+        const role = (m.role||'user').toLowerCase();
+        if (role === 'system') return null;
+        const tag = role === 'assistant' ? 'assistant' : 'user';
+        let content = m.content.trim();
+        if (content.length > 500) content = content.slice(0,500)+"…";
+        return `${i+1}. ${tag}: ${content}`;
+      }).filter(Boolean);
+      if (formatted.length) historyBlock = `Conversation so far (most recent last):\n${formatted.join('\n')}\n---\n`;
+    }
     const endpoint = body.filters?.endpoint || null;
     const now = Date.now();
     const from = body.from ? Number(body.from) : (now - 60*60000);
     const to = body.to ? Number(body.to) : now;
-  console.log('[ai/chat/stream]', { llm: !!body.llm, endpoint, from, to, promptLen: (userMsg||'').length });
+  if (should('debug')) log.debug('[ai/chat/stream]', { llm: !!body.llm, endpoint, from, to, promptLen: (userMsg||'').length });
 
     // Collect metrics (same as non-stream)
     let rows = [];
@@ -1676,6 +1823,8 @@ app.post('/ai/chat/stream', async (req, res) => {
 
   // Build answer text (LLM optional, but contextual when LLM is off)
   const lowerQ = String(userMsg||'').toLowerCase();
+  const chartIntent = /\b(pie|bar|chart|graph|visual|visualize|plot)\b/.test(lowerQ);
+  let chartSpec = null; // chart specification for streaming route (mirrors non-stream)
   // Direct metric intents
   const slowestIntent = /(which|what)?\s*(is\s*)?(the\s*)?slow(est)?\s+endpoint/.test(lowerQ) || /slowest\s+endpoint/.test(lowerQ);
   let directAnswer = null; let directIntent = null;
@@ -1800,6 +1949,29 @@ app.post('/ai/chat/stream', async (req, res) => {
   if (!useLLM && wantJoke) {
     answer = "Why do programmers prefer dark mode? Because light attracts bugs.";
   }
+  // Construct chartSpec if requested
+  if (!chartSpec && chartIntent) {
+    const wantErrorsChart = /error|errors|fail|fails|failure|5\d\d|4\d\d/.test(lowerQ);
+    const wantLatencyChart = /latency|slow|p95|p99|perf|performance/.test(lowerQ) || /endpoint/.test(lowerQ);
+    if (wantErrorsChart) {
+      const entries = Object.entries(byStatus).sort((a,b)=>b[1]-a[1]).slice(0,8);
+      if (entries.length) {
+        chartSpec = { type: 'pie', title: 'Errors by Status', series: [{ name: 'status', labels: entries.map(e=>e[0]), values: entries.map(e=>e[1]) }], meta: { source: 'errors_by_status' } };
+      } else {
+        chartSpec = { type: 'pie', title: 'Errors by Status', series: [{ name: 'status', labels: [], values: [] }], meta: { source: 'errors_by_status', empty: true } };
+      }
+    } else if (wantLatencyChart) {
+      const groups = new Map();
+      for (const r of rows) { if (!r.ok || typeof r.latencyMs !== 'number') continue; const ep = r.endpoint||'(unknown)'; const arr = groups.get(ep)||[]; arr.push(r.latencyMs); groups.set(ep, arr); }
+      const quant = (arr,q)=>{ if(!arr.length) return 0; const a=arr.slice().sort((x,y)=>x-y); const pos=(a.length-1)*q; const b=Math.floor(pos); const rest=pos-b; return a[b+1]!==undefined ? a[b]+rest*(a[b+1]-a[b]) : a[b]; };
+      const stats = Array.from(groups.entries()).map(([ep,arr])=>({ ep, p95: Math.round(quant(arr,0.95)||0) })).sort((a,b)=>b.p95-a.p95).slice(0,8);
+      if (stats.length) {
+        chartSpec = { type: 'bar', title: 'Endpoint p95 latency (ms)', x: stats.map(s=>s.ep), y: stats.map(s=>s.p95), meta: { source: 'latency_by_endpoint', metric: 'p95_latency_ms' } };
+      } else {
+        chartSpec = { type: 'bar', title: 'Endpoint p95 latency (ms)', x: [], y: [], meta: { source: 'latency_by_endpoint', metric: 'p95_latency_ms', empty: true } };
+      }
+    }
+  }
   if (directIntent && useLLM) {
     // Suppress LLM for deterministic direct intent
     body.llm = false;
@@ -1810,12 +1982,7 @@ app.post('/ai/chat/stream', async (req, res) => {
   if (useLLM) {
       try {
         llmTried = true;
-        const sys = wantPopularityModel
-          ? `You are an SRE/analytics assistant. Answer the user's question directly using the provided context. If they ask for the most used model, identify the top model by count, include its share %, and list the next few. Keep it concise and explanatory.`
-          : (wantJoke
-            ? `Tell ONE short, clean, family-friendly programming joke. No preface, just the joke in one or two lines.`
-            : `You are an SRE assistant. Summarize reliability for the given time window. Include: total, SLI%, p50/p95/p99, top error statuses, and a short recommendation. Keep it concise.`);
-        let popularityFacts = '';
+        let popularityFacts='';
         if (wantPopularityModel) {
           try {
             let facts = [];
@@ -1828,23 +1995,18 @@ app.post('/ai/chat/stream', async (req, res) => {
               facts = rowsM.map(r=>`${r.key}: ${r.c}`).join(', ');
             }
             if (!facts) {
-              const counts = rows.reduce((acc,r)=>{ const k=r.model||'(unknown)'; acc[k]=(acc[k]||0)+1; return acc; },{});
+              const counts = rows.reduce((acc,r)=>{ const k=r.model||'(unknown)'; acc[k] = (acc[k]||0)+1; return acc; },{});
               const ordered = Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([k,v])=>`${k}: ${v}`).join(', ');
               facts = ordered;
             }
             popularityFacts = `Model usage (count): ${facts}`;
           } catch {}
         }
-        const ctx = wantJoke
-          ? `User question: ${userMsg || '(none)'}\n`
-          : (
-            `Window: ${new Date(from).toISOString()} to ${new Date(to).toISOString()}\n`+
-            `Endpoint: ${endpoint||'all'}\n`+
-            (wantPopularityModel? `${popularityFacts}\n` :
-              `Total: ${total}\nOK: ${ok}\nSLI: ${(sli*100).toFixed(2)}%\nLatency: p50=${p50??'–'}ms p95=${p95??'–'}ms p99=${p99??'–'}ms\nTop statuses: ${topStatuses||'—'}\n`)+
-            `User question: ${userMsg || '(none)'}\n`+
-            `Top logs: ${logs.slice(0,5).map(l=>`[${new Date(l.ts).toISOString()}] ${l.status} ${l.endpoint} ${l.model||''} ${l.region||''} ${String(l.text||'').slice(0,160)}`).join('\n')}`
-          );
+        const { sys, ctx } = buildLLMPromptComponents({
+          wantPopularityModel, wantJoke, userMsg, historyBlock,
+          from, to, endpoint, total, ok, sli, p50, p95, p99,
+          topStatuses, logs, popularityFacts
+        });
   // Per-request override (body.model) allowed via same allowlist as non-stream route
   const MODEL_ALLOWLIST = new Set([
     'gpt-4.1-mini','gpt-4.1','gpt-4o-mini','gpt-4o','gpt-4o-realtime-preview',
@@ -1862,7 +2024,7 @@ app.post('/ai/chat/stream', async (req, res) => {
     if (isG5) {
       payload = { model: modelName, input:[ { role:'system', content:[{ type:'input_text', text: sys }] }, { role:'user', content:[{ type:'input_text', text: ctx }] } ] };
     } else {
-      payload = { model: modelName, input:[ { role:'system', content:[{ type:'input_text', text: sys }] }, { role:'user', content:[{ type:'input_text', text: ctx }] } ], max_output_tokens: 400, temperature: 0.2 };
+  payload = { model: modelName, input:[ { role:'system', content:[{ type:'input_text', text: sys }] }, { role:'user', content:[{ type:'input_text', text: ctx }] } ], max_output_tokens: 450, temperature: 0.2 };
     }
     return fetch('https://api.openai.com/v1/responses', { method:'POST', headers:{ 'Content-Type':'application/json','Authorization':`Bearer ${process.env.OPENAI_API_KEY}` }, body: JSON.stringify(payload) });
   }
@@ -1872,7 +2034,7 @@ app.post('/ai/chat/stream', async (req, res) => {
     if (isG5) {
       payload = { model: modelName, messages:[ { role:'system', content: sys }, { role:'user', content: ctx } ] };
     } else {
-      payload = { model: modelName, messages:[ { role:'system', content: sys }, { role:'user', content: ctx } ], max_tokens: 400, temperature: 0.2 };
+  payload = { model: modelName, messages:[ { role:'system', content: sys }, { role:'user', content: ctx } ], max_tokens: 450, temperature: 0.2 };
     }
     return fetch('https://api.openai.com/v1/chat/completions', { method:'POST', headers:{ 'Content-Type':'application/json','Authorization':`Bearer ${process.env.OPENAI_API_KEY}` }, body: JSON.stringify(payload) });
   }
@@ -1912,7 +2074,7 @@ app.post('/ai/chat/stream', async (req, res) => {
         } catch(eFb){ llmFallback = { ...(llmFallback||{}), finalFallbackError: String(eFb?.message||eFb) }; }
       }
     }
-    console.log('[ai/chat/stream] LLM', { tried: llmTried, used: usedLLM, status: llmStatus, model: llmModel, route: llmRoute, fallback: llmFallback||null });
+  if (should('info')) log.info('[ai/chat/stream] LLM', { tried: llmTried, used: usedLLM, status: llmStatus, model: llmModel, route: llmRoute, fallback: llmFallback||null });
   } catch(eAll){
     llmFallback = { ...(llmFallback||{}), outerError: String(eAll?.message||eAll) };
     console.warn('[ai/chat/stream] LLM failed', String(eAll?.message||eAll));
@@ -1975,7 +2137,7 @@ app.post('/ai/chat/stream', async (req, res) => {
       status: l.status || null,
       text: (l.text||'').slice(0,400)
     }));
-    write({ done: true, citations, evidence, data, summary, narrative: usedLLM ? answer : buildNarrative(), usedLLM, llmModel, llmTried, llmStatus, llmRoute, llmFallback });
+  write({ done: true, citations, evidence, data, summary, narrative: usedLLM ? answer : buildNarrative(), usedLLM, llmModel, llmTried, llmStatus, llmRoute, llmFallback, chartSpec });
     try { res.end(); } catch(_){}
   } catch (e) {
     console.error('[ai/chat/stream] failed', e);
@@ -2256,8 +2418,8 @@ app.use('/', express.static(path.join(__dirname, '../public')));
 const port = process.env.PORT || 3000;
 if (process.env.NODE_ENV !== 'test') {
   app.listen(port, () => {
-    console.log(`[status] listening on http://localhost:${port}`);
-    console.log(`[probe] interval=${intervalSec}s model=${model} region=${region}`);
+  log.info(`[status] listening on http://localhost:${port}`);
+  log.info(`[probe] interval=${intervalSec}s model=${model} region=${region}`);
     try {
       const stack = app?._router?.stack || [];
       const routes = [];
@@ -2268,7 +2430,7 @@ if (process.env.NODE_ENV !== 'test') {
           routes.push(`${methods} ${path}`);
         }
       }
-      console.log('[routes]', routes.join(' | '));
+  if (should('debug')) log.debug('[routes]', routes.join(' | '));
     } catch(_) {}
   });
 }

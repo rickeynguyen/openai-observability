@@ -325,9 +325,7 @@
           <label style="display:flex; gap:6px; align-items:center;">
             <input id="chatUseLlm" type="checkbox" /> Use LLM
           </label>
-          <label style="display:flex; gap:6px; align-items:center;" title="When on and LLM is used, Answer shows the LLM text; the structured summary moves to Narrative.">
-            <input id="chatReplace" type="checkbox" /> Replace Answer with LLM
-          </label>
+          <!-- Removed deprecated Replace Answer with LLM checkbox (superseded by upcoming Summary|Narrative tabs) -->
           <span class="muted">Tip: templates and reasons pre-fill the box; edit before sending.</span>
         </div>
         <div style="display:flex;gap:8px;align-items:flex-start;">
@@ -343,15 +341,22 @@
         </div>
       </div>
       <div class="row">
-        <div class="card" style="flex:1; min-width:320px; min-height:220px;">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; gap:8px;">
-            <div style="display:flex; align-items:center; gap:8px;">
-              <div style="font-weight:600;">Answer</div>
-              <span id="llmBadge" class="pill" style="display:none; background:#a78bfa; color:#0b0f14; font-weight:700;">LLM</span>
+        <div class="card" style="flex:1; min-width:320px; min-height:240px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; gap:10px;">
+            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+              <div style="font-weight:600; display:flex; align-items:center; gap:8px;">Answer <span id="llmBadge" class="pill" style="display:none; background:#a78bfa; color:#0b0f14; font-weight:700;">LLM</span></div>
+              <span style="display:inline-flex; background:#111b27; border:1px solid #243244; border-radius:6px; overflow:hidden;">
+                <button type="button" id="tabSummary" style="background:#1e293b; color:#e5e7eb; border:none; padding:4px 10px; font-size:12px; cursor:pointer;">DB</button>
+                <button type="button" id="tabNarrative" style="background:transparent; color:#9ca3af; border:none; padding:4px 10px; font-size:12px; cursor:pointer;">LLM</button>
+              </span>
             </div>
-            <button id="copySummaryBtn" class="btn" type="button" disabled title="Copy summary to clipboard">Copy summary</button>
+            <div style="display:flex; gap:6px; align-items:center;">
+              <button id="forceLlmBtn" class="btn" type="button" style="display:none; font-size:11px; padding:4px 8px;" title="Ask LLM for deeper narrative">Ask LLM</button>
+              <button id="copySummaryBtn" class="btn" type="button" disabled title="Copy summary to clipboard">Copy summary</button>
+            </div>
           </div>
-          <div style="position:relative;">
+          <!-- Removed fixed min-height to eliminate large blank gap when no callout is shown -->
+          <div id="answerCalloutContainer" style="position:relative;">
             <div id="chatCallout" style="display:none; margin-bottom:8px; padding:6px 8px; border-radius:6px; border:1px solid #243244; background:#0f172a; font-size:12px; font-weight:600;">
               <span id="chatCalloutText"></span>
               <button id="calloutInfoBtn" title="Show reliability threshold legend" style="float:right; background:transparent; border:none; color:#93c5fd; cursor:pointer; font-size:12px; padding:0; margin-left:8px;">ℹ️</button>
@@ -362,11 +367,11 @@
               <div class="muted" style="margin-top:6px;">Evaluated each refresh; improvements are debounced briefly to reduce flicker.</div>
             </div>
           </div>
-          <div id="chatNarrative" style="display:none; margin-bottom:8px; font-size:13px; line-height:1.35"></div>
-          <div id="chatAnswer" style="font-size:13px; line-height:1.35">—</div>
+          <div id="chatAnswer" style="font-size:13px; line-height:1.35; white-space:normal;">—</div>
+          <div id="chatNarrative" style="display:none; margin-top:8px; font-size:13px; line-height:1.35; white-space:normal;"></div>
+          <div id="noLlmNote" class="muted" style="display:none; margin-top:6px; font-size:11px; border:1px dashed #334155; padding:6px 8px; border-radius:6px; background:#0f172a;">Deterministic DB summary shown. Click <strong>Ask LLM</strong> for a deeper narrative.</div>
           <div id="chatEvidence" style="display:none; margin-top:10px; font-size:11px;"></div>
           <div id="chatAnswerMeta" class="muted" style="font-size:11px; margin-top:6px;"></div>
-          <div id="chatSwapHint" class="muted" style="font-size:11px; margin-top:4px; display:none;">Structured summary moved below.</div>
         </div>
         <div class="card" style="flex:1; min-width:320px; min-height:220px;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
@@ -384,6 +389,14 @@
           <canvas id="chatDiagramCanvas" height="200" style="width:100%; background:#0f172a; border:1px solid #243244; border-radius:6px;"></canvas>
           <div id="chatDiagramEmpty" class="muted" style="font-size:12px; display:none;">No data to visualize.</div>
         </div>
+      </div>
+      <!-- Conversation history panel -->
+      <div class="card" style="margin-top:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <div style="font-weight:600;">Conversation</div>
+          <button id="chatHistoryClear" class="btn" type="button" style="font-size:11px; padding:4px 8px;">Clear</button>
+        </div>
+        <div id="chatHistoryList" style="margin-top:6px; max-height:160px; overflow:auto; font-size:12px; border:1px solid #243244; border-radius:6px; background:#0f172a;"></div>
       </div>
       <div class="card" style="margin-top:12px;">
         <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -944,10 +957,11 @@
       })();
   function renderAnswerSummary(summary){
         try{
-          const ans = document.getElementById('chatAnswer');
+          const ans = document.getElementById('chatAnswerSummary') || document.getElementById('chatAnswer');
           const meta = document.getElementById('chatAnswerMeta');
+          const note = document.getElementById('noLlmNote');
           const copyBtn=document.getElementById('copySummaryBtn');
-          if(!summary){ meta.textContent=''; ans.textContent='—'; hideCallout(); if(copyBtn) copyBtn.disabled=true; return; }
+          if(!summary){ meta.textContent=''; ans.textContent='—'; hideCallout(); if(copyBtn) copyBtn.disabled=true; if(note) note.style.display='none'; return; }
           chatLastSummary = summary;
           const sli = Number(summary.totals?.sli||0);
           const sliPct = (sli*100).toFixed(2)+'%';
@@ -988,7 +1002,18 @@
           showCallout(summary);
           if(copyBtn) copyBtn.disabled=false;
           meta.textContent = meta.textContent || '';
+          // Note visibility now managed centrally via updateLlmUiState()
         }catch(_){ /* ignore */ }
+      }
+
+      // Unified UI state updater for LLM-related controls (badge, Ask LLM button, note)
+      function updateLlmUiState(opts){
+        try{
+          const { usedLLM=false, hasSummary=false, lastQuery='' } = opts||{};
+          const badge=document.getElementById('llmBadge'); if(badge){ badge.style.display = usedLLM ? 'inline-block':'none'; }
+          const note=document.getElementById('noLlmNote'); if(note){ note.style.display = usedLLM ? 'none' : (hasSummary ? 'block':'none'); }
+          const btn=document.getElementById('forceLlmBtn'); if(btn){ btn.style.display = (!usedLLM && hasSummary) ? 'inline-block':'none'; if(lastQuery) btn.dataset.lastQuery = lastQuery; }
+        }catch(_){ }
       }
 
       function drawChatDiagram(data){
@@ -1053,19 +1078,74 @@
         }catch(_){ }
       }
 
+      // --- Conversation transcript state & helpers ---
+      const chatHistory = [];
+      // Load persisted chat history (best-effort)
+      (function loadChatHistory(){
+        try{
+          const raw = localStorage.getItem('obs_chat_history_v1');
+          if(raw){
+            const arr = JSON.parse(raw);
+            if(Array.isArray(arr)){
+              arr.slice(-100).forEach(m=>{ if(m && typeof m==='object' && m.role && m.content){ chatHistory.push({ role: m.role==='assistant'?'assistant':'user', content: String(m.content).slice(0,1500), ts: m.ts||Date.now() }); } });
+              renderChatHistory();
+            }
+          }
+        }catch(_){ }
+      })();
+      function persistChatHistory(){
+        try{
+          const slim = chatHistory.slice(-120).map(m=>({ role:m.role, content:m.content.slice(0,2000), ts:m.ts }));
+          localStorage.setItem('obs_chat_history_v1', JSON.stringify(slim));
+        }catch(_){ }
+      }
+      function appendChatMessage(role, content){
+        try{
+          if(!content) return; const maxMessages=50; chatHistory.push({ role, content: String(content), ts: Date.now() });
+          while(chatHistory.length > maxMessages) chatHistory.shift();
+          renderChatHistory();
+          persistChatHistory();
+        }catch(_){ }
+      }
+      function renderChatHistory(){
+        try{
+          const list=document.getElementById('chatHistoryList'); if(!list) return;
+          list.innerHTML='';
+            chatHistory.slice(-80).forEach(m=>{
+              const div=document.createElement('div');
+              div.className='chatMsg';
+              div.style.padding='4px 6px';
+              div.style.borderBottom='1px solid #1e293b';
+              div.style.fontSize='12px';
+              div.style.whiteSpace='pre-wrap';
+              const safe = mdEscapeHtml(m.content.slice(0,600));
+              div.innerHTML = `<span style="font-weight:600;color:${m.role==='user'?'#93c5fd':'#34d399'};">${m.role}:</span> ${safe}`;
+              list.appendChild(div);
+            });
+          list.scrollTop = list.scrollHeight;
+        }catch(_){ }
+      }
+      function getChatHistoryPayload(){
+        // Keep last 20 turns (role+content) truncated for context
+        return chatHistory.slice(-20).map(m=>({ role: m.role==='assistant' ? 'assistant' : 'user', content: m.content.slice(0,1000) }));
+      }
+
       async function chatSend(){
+        if(chatSend._inFlight){ return; }
         const input=document.getElementById('chatInput');
         const txt=input.value.trim();
         if(!txt){ setChatLoading(false); return; }
+        appendChatMessage('user', txt);
+        input.value='';
+        chatSend._inFlight = true;
         setChatLoading(true);
         const abs=absoluteRange(); const win=getWindow(); const now=Date.now();
         const from=abs?abs.from:(now-win*60000); const to=abs?abs.to:now;
         const ep=document.getElementById('endpointFilter').value;
-    const llm=!!document.getElementById('chatUseLlm').checked;
-    const replaceWithLLM=!!document.getElementById('chatReplace').checked;
+  const llm=!!document.getElementById('chatUseLlm').checked;
         const modelSel = document.getElementById('chatModel');
         const chosenModel = modelSel ? (modelSel.value||'').trim() : '';
-        const body={messages:[{role:'user',content:txt}],from, to, filters:{ endpoint: (ep&&ep!=='__all__')?ep:null }, llm};
+        const body={messages:getChatHistoryPayload(),from, to, filters:{ endpoint: (ep&&ep!=='__all__')?ep:null }, llm};
         if(chosenModel){ body.model = chosenModel; }
   const ansEl=document.getElementById('chatAnswer');
   const copyBtn=document.getElementById('copySummaryBtn');
@@ -1091,26 +1171,18 @@
             while((idx=leftover.indexOf('\n'))>=0){
               const line = leftover.slice(0,idx); leftover = leftover.slice(idx+1);
               if(!line.trim()) continue;
-        try{const obj=JSON.parse(line); if(obj.delta!=null){ ansBuffer += String(obj.delta); ansEl.textContent += String(obj.delta); }
+          try{const obj=JSON.parse(line); if(obj.delta!=null){ ansBuffer += String(obj.delta); if(!obj.done){ // live token display
+                    const narrLive=document.getElementById('chatNarrative'); if(narrLive && document.getElementById('tabNarrative')?.classList.contains('active')){ narrLive.innerHTML = mdEscapeHtml(ansBuffer); }
+                  }}
                 if(obj.done){
                   if(obj.summary){
-                    if(replaceWithLLM && obj.usedLLM && obj.narrative){
-                      // Put LLM narrative in Answer (rendered as Markdown); put structured summary as plain text in Narrative
-                      ansEl.innerHTML = mdToHtml(obj.narrative);
-                      // Side-effects normally done by renderAnswerSummary
-                      try{ chatLastSummary = obj.summary; showCallout(obj.summary); if(copyBtn) copyBtn.disabled=false; }catch(_){}
-                      const textSummary = buildSummaryText(obj.summary);
-                      const n=document.getElementById('chatNarrative'); if(n){ n.textContent = textSummary; n.style.display='block'; }
-                      const hint=document.getElementById('chatSwapHint'); if(hint) hint.style.display='block';
-                    } else {
-                      renderAnswerSummary(obj.summary);
-                      if(obj.narrative){ const n=document.getElementById('chatNarrative'); if(n){ n.innerHTML = obj.usedLLM ? mdToHtml(obj.narrative) : mdEscapeHtml(obj.narrative); n.style.display='block'; } }
-                      const hint=document.getElementById('chatSwapHint'); if(hint) hint.style.display='none';
-                    }
+                    renderAnswerSummary(obj.summary);
+                    if(obj.narrative){ narr.innerHTML = obj.usedLLM ? mdToHtml(obj.narrative) : mdEscapeHtml(obj.narrative); }
                   }
+          if(obj.chartSpec){ renderChartSpec(obj.chartSpec); }
           if(obj.data){ chatDiagramLastData = obj.data; drawChatDiagram(chatDiagramLastData); }
-          if(!obj.summary && obj.narrative){ const n=document.getElementById('chatNarrative'); if(n){ n.innerHTML = obj.usedLLM ? mdToHtml(obj.narrative) : mdEscapeHtml(obj.narrative); n.style.display='block'; } }
-          if(obj.usedLLM){ usedLLMStream = true; const b=document.getElementById('llmBadge'); if(b){ b.style.display='inline-block'; } }
+          if(!obj.summary && obj.narrative){ narr.innerHTML = obj.usedLLM ? mdToHtml(obj.narrative) : mdEscapeHtml(obj.narrative); }
+          if(obj.usedLLM){ usedLLMStream = true; }
           const metaEl=document.getElementById('chatAnswerMeta'); if(metaEl){
             const tried = obj.llmTried ? 'tried' : 'not tried';
             const used = obj.usedLLM ? 'used' : 'not used';
@@ -1118,17 +1190,22 @@
             const status = (!obj.usedLLM && obj.llmStatus) ? ` • status ${obj.llmStatus}` : '';
             metaEl.textContent = `LLM ${used} (${tried})${model}${status}`;
           }
+          appendChatMessage('assistant', (obj.narrative || ansBuffer || '').trim());
+          updateLlmUiState({ usedLLM: !!obj.usedLLM, hasSummary: !!obj.summary, lastQuery: txt });
+          persistChatHistory();
                 }
               }catch(_){ /* ignore */ }
             }
+
+            // (Removed duplicate tab initialization block - already initialized globally)
+
+            // (Removed duplicate Ask LLM initializer; single global one remains)
           }
           // Post-process: if LLM used and we didn't replace with narrative earlier, render accumulated buffer as Markdown
           try{
-            if(usedLLMStream && !(replaceWithLLM && ansEl.innerHTML)){
-              ansEl.innerHTML = mdToHtml(ansBuffer.trim());
-            }
+            if(usedLLMStream){ narr.innerHTML = mdToHtml(ansBuffer.trim()); }
           }catch(_){ }
-          setChatLoading(false);
+          setChatLoading(false); chatSend._inFlight=false;
           return;
         }catch(_){ /* fallback to non-stream */ }
         try{
@@ -1136,22 +1213,13 @@
           if(!r.ok){ansEl.textContent='Chat error ('+r.status+')';return;}
           const j=await r.json();
           if (j.summary){
-            if(replaceWithLLM && j.usedLLM && j.narrative){
-              ansEl.innerHTML = mdToHtml(j.narrative);
-              try{ chatLastSummary = j.summary; showCallout(j.summary); if(copyBtn) copyBtn.disabled=false; }catch(_){}
-              const textSummary = buildSummaryText(j.summary);
-              const n=document.getElementById('chatNarrative'); if(n){ n.textContent = textSummary; n.style.display='block'; }
-              const hint=document.getElementById('chatSwapHint'); if(hint) hint.style.display='block';
-            } else {
-              renderAnswerSummary(j.summary);
-              if (j.narrative) { const n=document.getElementById('chatNarrative'); if(n){ n.innerHTML = j.usedLLM ? mdToHtml(j.narrative) : mdEscapeHtml(j.narrative); n.style.display='block'; } }
-              const hint=document.getElementById('chatSwapHint'); if(hint) hint.style.display='none';
-            }
+            renderAnswerSummary(j.summary);
+            if (j.narrative) { narr.innerHTML = j.usedLLM ? mdToHtml(j.narrative) : mdEscapeHtml(j.narrative); }
           } else {
-            if (j.usedLLM && j.answer) ansEl.innerHTML = mdToHtml(j.answer); else ansEl.textContent = j.answer || '(no answer)';
-            if (j.narrative) { const n=document.getElementById('chatNarrative'); if(n){ n.innerHTML = j.usedLLM ? mdToHtml(j.narrative) : mdEscapeHtml(j.narrative); n.style.display='block'; } }
+            if (j.usedLLM && j.answer) { narr.innerHTML = mdToHtml(j.answer); } else { narr.textContent = j.answer || '(no answer)'; }
           }
-          if (j.usedLLM) { const b=document.getElementById('llmBadge'); if(b){ b.style.display='inline-block'; } }
+          // Badge handled by unified updater
+          if(j.chartSpec){ renderChartSpec(j.chartSpec); }
           // Evidence (grounding log snippets)
           try {
             const evBox=document.getElementById('chatEvidence');
@@ -1174,6 +1242,9 @@
           }catch(_){ }
           chatDiagramLastData = j.data || { tables: [] };
           drawChatDiagram(chatDiagramLastData);
+          appendChatMessage('assistant', (j.narrative || j.answer || '').trim());
+          persistChatHistory();
+          updateLlmUiState({ usedLLM: !!j.usedLLM, hasSummary: !!j.summary, lastQuery: txt });
           const metaEl=document.getElementById('chatAnswerMeta'); if(metaEl){
             const tried = j.llmTried ? 'tried' : 'not tried';
             const used = j.usedLLM ? 'used' : 'not used';
@@ -1181,11 +1252,92 @@
             const status = (!j.usedLLM && j.llmStatus) ? ` • status ${j.llmStatus}` : '';
             metaEl.textContent = `LLM ${used} (${tried})${model}${status}`;
           }
-          setChatLoading(false);
-        }catch(e){ansEl.textContent='Chat failed'; setChatLoading(false);}
-        finally { setChatLoading(false); }
+          setChatLoading(false); chatSend._inFlight=false;
+        }catch(e){ansEl.textContent='Chat failed'; setChatLoading(false); chatSend._inFlight=false;}
+        finally { setChatLoading(false); chatSend._inFlight=false; }
+      }
+
+  // Initialize DB | LLM tabs (id tabSummary/tabNarrative)
+      (function initAnswerTabs(){
+        try{
+          const tabS=document.getElementById('tabSummary');
+          const tabN=document.getElementById('tabNarrative');
+          const summaryEl=document.getElementById('chatAnswer');
+            const narrEl=document.getElementById('chatNarrative');
+          if(!tabS||!tabN||!summaryEl||!narrEl) return;
+          function activate(which){
+            if(which==='summary'){
+              tabS.style.background='#1e293b'; tabS.style.color='#e5e7eb';
+              tabN.style.background='transparent'; tabN.style.color='#9ca3af';
+              summaryEl.style.display='block';
+              narrEl.style.display='none';
+            } else {
+              tabN.style.background='#1e293b'; tabN.style.color='#e5e7eb';
+              tabS.style.background='transparent'; tabS.style.color='#9ca3af';
+              summaryEl.style.display='block'; // hide for clarity
+              summaryEl.style.display='none';
+              narrEl.style.display='block';
+            }
+          }
+          tabS.addEventListener('click',()=>activate('summary'));
+          tabN.addEventListener('click',()=>activate('narrative'));
+          activate('summary');
+        }catch(_){ }
+      })();
+
+      // Force LLM narrative generation button
+      (function initForceLlmButton(){
+        try{
+          const btn=document.getElementById('forceLlmBtn'); if(!btn) return;
+          btn.addEventListener('click',()=>{
+            if(chatSend._inFlight) return; // prevent double trigger while sending
+            const last=btn.dataset.lastQuery; if(!last) return;
+            const input=document.getElementById('chatInput'); if(input){ input.value=last; }
+            const llmBox=document.getElementById('chatUseLlm'); if(llmBox){ llmBox.checked=true; }
+            chatSend();
+            // Switch to Narrative tab (will populate after response)
+            const tabN=document.getElementById('tabNarrative'); if(tabN) tabN.click();
+            btn.style.display='none';
+          });
+        }catch(_){ }
+      })();
+
+      // --- chartSpec rendering (bar + pie) ---
+      function renderChartSpec(spec){
+        try{
+          if(!spec || typeof spec !== 'object') return;
+          const canvas=document.getElementById('chatDiagramCanvas'); if(!canvas) return;
+          const empty=document.getElementById('chatDiagramEmpty'); if(empty) empty.style.display='none';
+          canvas.style.display='block';
+          if(spec.type==='bar' && Array.isArray(spec.x) && Array.isArray(spec.y)){
+            drawChatBarChart(canvas, spec.x, spec.y); return;
+          }
+            if(spec.type==='pie' && Array.isArray(spec.series) && spec.series[0]){
+              const s=spec.series[0];
+              drawPieChart(canvas, s.labels, s.values, spec.title||'');
+              return;
+            }
+        }catch(_){ }
+      }
+      function drawPieChart(canvas, labels, values, title){
+        try{
+          const ctx=canvas.getContext('2d'); const w=canvas.clientWidth||canvas.width; const h=canvas.height; canvas.width=w; ctx.clearRect(0,0,w,h);
+          if(!labels || !labels.length) return;
+          const total = values.reduce((a,b)=>a+(Number(b)||0),0)||1;
+          const cx=w/2, cy=h/2; const radius=Math.min(w,h)/2 - 20; let start=-Math.PI/2;
+          const palette=['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#ec4899','#22c55e'];
+          labels.forEach((lbl,i)=>{
+            const val=Number(values[i]||0); const frac=val/total; const end=start+frac*Math.PI*2;
+            ctx.beginPath(); ctx.moveTo(cx,cy); ctx.fillStyle=palette[i%palette.length]; ctx.arc(cx,cy,radius,start,end); ctx.closePath(); ctx.fill();
+            const mid=(start+end)/2; const lx=cx+Math.cos(mid)*radius*0.6; const ly=cy+Math.sin(mid)*radius*0.6;
+            ctx.fillStyle='#e5e7eb'; ctx.font='10px system-ui'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(lbl, lx, ly);
+            start=end;
+          });
+          if(title){ ctx.fillStyle='#e5e7eb'; ctx.font='12px system-ui'; ctx.textAlign='center'; ctx.fillText(title, cx, h-8); }
+        }catch(_){ }
       }
       document.getElementById('chatSend').addEventListener('click',chatSend);
+  const histClear=document.getElementById('chatHistoryClear'); if(histClear){ histClear.addEventListener('click',()=>{ chatHistory.length=0; persistChatHistory(); renderChatHistory(); }); }
   document.getElementById('chatClear').addEventListener('click',()=>{document.getElementById('chatInput').value='';document.getElementById('chatAnswer').textContent='—';document.getElementById('chatCitations').textContent='—';const ev=document.getElementById('chatEvidence');if(ev){ev.innerHTML='';ev.style.display='none';}});
       document.getElementById('chatInput').addEventListener('keydown',e=>{if(e.key==='Enter'&& (e.metaKey||e.ctrlKey)){e.preventDefault();chatSend();}});
   function getKey(){
@@ -1216,13 +1368,9 @@
   (function initLlmPrefs(){
     try{
       const useEl=document.getElementById('chatUseLlm');
-      const repEl=document.getElementById('chatReplace');
-      const storedUse=localStorage.getItem('obs_chat_use_llm');
-      const storedRep=localStorage.getItem('obs_chat_replace_llm');
-      if(storedUse==null){ useEl.checked=true; } else { useEl.checked = storedUse==='1'; }
-      if(storedRep==null){ repEl.checked=true; } else { repEl.checked = storedRep==='1'; }
-      useEl.addEventListener('change',()=>{ try{ localStorage.setItem('obs_chat_use_llm', useEl.checked?'1':'0'); }catch(_){ } });
-      repEl.addEventListener('change',()=>{ try{ localStorage.setItem('obs_chat_replace_llm', repEl.checked?'1':'0'); }catch(_){ } });
+  const storedUse=localStorage.getItem('obs_chat_use_llm');
+  if(storedUse==null){ useEl.checked=true; } else { useEl.checked = storedUse==='1'; }
+  useEl.addEventListener('change',()=>{ try{ localStorage.setItem('obs_chat_use_llm', useEl.checked?'1':'0'); }catch(_){ } });
     }catch(_){ }
   })();
   async function runOp(url, method='GET'){
@@ -1391,11 +1539,8 @@
         tpl.addEventListener('change',()=>{const idx=Number(tpl.value); if(Number.isInteger(idx)){ const t=TEMPLATES[idx]; if(t){ const input=document.getElementById('chatInput'); input.value=t.text; input.focus(); }}});
   // Persist LLM toggle
   const llmBox=document.getElementById('chatUseLlm');
-  const replBox=document.getElementById('chatReplace');
   try{ llmBox.checked = localStorage.getItem('obs_chat_llm')==='1'; }catch(_){ llmBox.checked=false; }
-  try{ replBox.checked = localStorage.getItem('obs_chat_replace')==='1'; }catch(_){ replBox.checked=false; }
   llmBox.addEventListener('change',()=>{ try{ localStorage.setItem('obs_chat_llm', llmBox.checked?'1':'0'); }catch(_){ } });
-  replBox.addEventListener('change',()=>{ try{ localStorage.setItem('obs_chat_replace', replBox.checked?'1':'0'); }catch(_){ } });
       })();
       // ===== UI Enhancements logic =====
       const PRICING={"gpt-4o-mini":{prompt:0.000150,completion:0.000600},"gpt-4.1-nano":{prompt:0.000030,completion:0.000060},"omni-moderation-latest":{prompt:0.000050,completion:0},"text-embedding-3-small":{prompt:0.000020,completion:0},"default":{prompt:0.000100,completion:0.000200}};
