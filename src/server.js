@@ -1442,6 +1442,79 @@ app.post('/ai/chat', async (req, res) => {
       directIntent = 'slowest_endpoint';
     }
 
+    // Additional smart shortcut intents
+    // 1. Top errors (aggregate most frequent error status/errType across all endpoints)
+    const topErrorsIntent = /top\s+errors?|most\s+common\s+errors?|error\s+codes?|error\s+summary/.test(lowerQ);
+    if (!directAnswer && topErrorsIntent) {
+      const errCounts = rows.filter(r=>!r.ok).reduce((acc,r)=>{ const key=String(r.status||r.errType||'unknown'); acc[key]=(acc[key]||0)+1; return acc; },{});
+      const sorted = Object.entries(errCounts).sort((a,b)=>b[1]-a[1]).slice(0,5);
+      if (!sorted.length) directAnswer='No errors observed in range.'; else {
+        const totalErr = sorted.reduce((s,[_k,v])=>s+v,0);
+        const parts = sorted.map(([k,v])=>`${k} (${v})`);
+        directAnswer = `Top errors: ${parts.join(', ')}. Total errors (top ${sorted.length}): ${totalErr}.`;
+      }
+      directIntent='top_errors';
+    }
+
+    // 2. Highest error-rate endpoint
+    const errorRateIntent = /(highest|worst)\s+error[- ]?rate|which\s+endpoint\s+has\s+the\s+highest\s+errors?|most\s+failing\s+endpoint/.test(lowerQ);
+    if (!directAnswer && errorRateIntent) {
+      const byEp = new Map();
+      for (const r of rows){ const ep=r.endpoint||'(unknown)'; let rec=byEp.get(ep); if(!rec) { rec={total:0,err:0}; byEp.set(ep,rec);} rec.total++; if(!r.ok) rec.err++; }
+      const stats = Array.from(byEp.entries()).map(([ep,rec])=>({ ep, total:rec.total, err:rec.err, rate: rec.total? rec.err/rec.total : 0 }));
+      const eligible = stats.filter(s=>s.total>=3); // need a few samples
+      const ranking = (eligible.length?eligible:stats).sort((a,b)=> b.rate - a.rate || b.total - a.total);
+      const top = ranking[0];
+      if (!top || top.rate===0) directAnswer='No errors (cannot compute meaningful error rate).';
+      else directAnswer = `Highest error-rate endpoint is ${top.ep} (${(top.rate*100).toFixed(1)}% over ${top.total} calls${top.err?`, errors ${top.err}`:''}).`;
+      directIntent='highest_error_rate';
+    }
+
+    // 3. Most used model
+    const mostUsedModelIntent = /most\s+used\s+model|which\s+model\s+is\s+used\s+most|top\s+model/.test(lowerQ);
+    if (!directAnswer && mostUsedModelIntent) {
+      const counts = rows.reduce((acc,r)=>{ if(r.model) acc[r.model]=(acc[r.model]||0)+1; return acc; },{});
+      const sorted = Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+      if (!sorted.length) directAnswer='No model usage observed.'; else {
+        const [m1,c1]=sorted[0]; const [m2,c2]=sorted[1]||[];
+        directAnswer = `Most used model: ${m1} (${c1} calls)` + (m2?`. Next: ${m2} (${c2}).`: '');
+      }
+      directIntent='most_used_model';
+    }
+
+    // 4. Peak token usage (approx) - requires token fields present in rows (e.g., r.tokensIn/r.tokensOut)
+    const peakTokenIntent = /peak\s+token|highest\s+token|most\s+tokens?\s+used|token\s+usage/.test(lowerQ);
+    if (!directAnswer && peakTokenIntent) {
+      // Derive token count if present; fallback to message length heuristic if absent
+      const enriched = rows.map(r=>({ endpoint: r.endpoint||'(unknown)', tokens: (typeof r.tokensIn==='number'||typeof r.tokensOut==='number') ? (Number(r.tokensIn||0)+Number(r.tokensOut||0)) : null }));
+      const filtered = enriched.filter(e=>e.tokens && e.tokens>0);
+      if (!filtered.length) {
+        directAnswer='Token metrics not available for this range.';
+      } else {
+        // Group by endpoint for peak and total
+        const byEp = new Map();
+        for (const e of filtered){ const cur=byEp.get(e.endpoint)||{total:0,peak:0,count:0}; cur.total+=e.tokens; if(e.tokens>cur.peak) cur.peak=e.tokens; cur.count++; byEp.set(e.endpoint,cur); }
+        const stats = Array.from(byEp.entries()).map(([ep,v])=>({ep, avg: Math.round(v.total/Math.max(1,v.count)), peak:v.peak, total:v.total, count:v.count}));
+        const topPeak = stats.sort((a,b)=> b.peak - a.peak || b.total - a.total)[0];
+        if (topPeak) directAnswer = `Peak token usage: ${topPeak.peak} tokens in a single call on ${topPeak.ep} (avg ${topPeak.avg}, total ${topPeak.total} across ${topPeak.count} calls).`;
+        else directAnswer='Unable to compute peak token usage.';
+      }
+      directIntent='peak_token_usage';
+    }
+
+    // 5. Rate limiting hotspots (HTTP 429 concentration)
+    const rateLimitIntent = /rate\s+limit|too\s+many\s+requests|429s?|throttling/.test(lowerQ);
+    if (!directAnswer && rateLimitIntent) {
+      const rl = rows.filter(r=> String(r.status)==='429');
+      if (!rl.length) directAnswer='No rate limiting (429) observed.'; else {
+        const byEp = rl.reduce((acc,r)=>{ const ep=r.endpoint||'(unknown)'; acc[ep]=(acc[ep]||0)+1; return acc; },{});
+        const ranked = Object.entries(byEp).sort((a,b)=>b[1]-a[1]);
+        const parts = ranked.slice(0,3).map(([ep,c])=>`${ep} (${c})`);
+        directAnswer = `Rate limiting hotspots: ${parts.join(', ')}. Total 429s: ${rl.length}.`;
+      }
+      directIntent='rate_limiting_hotspots';
+    }
+
     // Logs: hybrid search (FTS + vectors when available)
     let logs = [];
     try {
@@ -1587,8 +1660,8 @@ app.post('/ai/chat', async (req, res) => {
     }
 
     let answer;
-    if (directIntent === 'slowest_endpoint' && directAnswer) {
-      // Short-circuit summary style for direct intent
+    if (directIntent && directAnswer) {
+      // Any recognized direct intent returns a concise deterministic answer (skip baseline preface)
       answer = directAnswer;
     } else {
       answer = wantPopularityModel

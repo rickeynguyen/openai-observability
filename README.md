@@ -130,17 +130,27 @@ Certain plain-English questions short‑circuit the generic reliability summary 
 
 Currently implemented:
 
-| Intent | Sample Phrases | Output Style |
-|--------|----------------|--------------|
+| Intent | Sample Phrases | Output Style (Example) |
+|--------|----------------|------------------------|
 | Slowest Endpoint | `which is the slowest endpoint?`, `slowest endpoint please`, `what's the slowest endpoint` | `Slowest endpoint (by p95) is /v1/files (p95 1487 ms, p99 1510 ms, samples 42). Next: /v1/chat/completions (p95 910 ms).` |
+| Top Errors | `top errors`, `error summary`, `most common errors` | `Top errors: 500 (12), 429 (4), 404 (2). Total errors (top 3): 18.` |
+| Highest Error-Rate Endpoint | `which endpoint has the highest error rate?`, `worst error rate endpoint` | `Highest error-rate endpoint is /v1/chat/completions (23.5% over 34 calls, errors 8).` |
+| Most Used Model | `most used model`, `top model`, `which model is used most` | `Most used model: gpt-4o-mini (120 calls). Next: gpt-4o (45).` |
+| Peak Token Usage | `peak token usage`, `highest token usage`, `most tokens used` | `Peak token usage: 4200 tokens in a single call on /v1/chat/completions (avg 980, total 21k across 22 calls).` |
+| Rate Limiting Hotspots | `rate limit hotspots`, `where are we getting 429s`, `429s?` | `Rate limiting hotspots: /v1/chat/completions (12), /v1/embeddings (3). Total 429s: 15.` |
 
 Behavior notes:
-- Ranks by p95 latency (ties broken by p99 then p50) over successful calls in the selected time window.
-- Prefers endpoints with ≥2 samples; falls back to single-sample if necessary.
-- Streams token-by-token (streaming endpoint) but still emits full structured `summary`, `data`, and `evidence` objects for charts and grounding.
-- LLM use is suppressed for these intents to avoid verbose paraphrasing.
+* All intents are deterministic: they bypass LLM summarization for speed and consistency.
+* Slowest Endpoint: ranks by p95 (ties → p99 → p50), requires ≥2 samples per endpoint unless only singletons exist.
+* Top Errors: aggregates non-2xx/ok statuses (status code or `errType`), lists top N with counts.
+* Highest Error-Rate Endpoint: minimum 3 samples to qualify; falls back to all endpoints if none meet threshold.
+* Most Used Model: counts occurrences of `model` across points (or recent logs if available in future extensions).
+* Peak Token Usage: sums `tokensIn + tokensOut` (or `tokensPrompt + tokensCompletion`) if present; reports peak single-call usage plus avg & total per endpoint.
+* Rate Limiting Hotspots: focuses on HTTP 429 statuses, listing top endpoints with occurrences.
+* Streaming mode still emits final evidence & structured `summary`/`data`; direct answer tokens are streamed incrementally for the slowest endpoint intent, others are short enough to arrive in one chunk.
+* If underlying data is insufficient, answers degrade gracefully (e.g., "No errors observed in range.").
 
-Planned (open an issue to prioritize): top errors, highest error-rate endpoint, most used model (already partially handled), peak token usage, rate limiting hotspots.
+Planned / Future: cost attribution per endpoint, percentile drift detection, anomaly spikes, multi-region comparison, adaptive SLO breach forecast.
 
 ---
 ## Synthetic Browser Monitors
