@@ -60,6 +60,54 @@ fly deploy
 5. Synthetic monitors run Playwright scripts generated or edited via a simple DSL with per-step timing & screenshots.
 
 ---
+## Architecture
+High-level data flow for the three core lanes (metrics, logs/RAG, synthetics):
+
+```mermaid
+flowchart LR
+	subgraph Metrics/SLI
+		P[Probes\n(chat,responses,...)] --> MStore[(In-Memory Store)]
+		MStore -->|push & ring buffer| SQLite[(SQLite)]
+		MStore --> UI1[UI: Charts/SLIs]
+		SQLite --> UI1
+	end
+
+	subgraph Logs & RAG
+		LIngest[Logs Ingest\n/ logs + sim] --> FTS[(FTS5 Index)]
+		LIngest --> VEC[(Embeddings\nVector Store)]
+		FTS --> RAG[Retriever]
+		VEC --> RAG
+		RAG --> ChatSumm[Chat Answer Builder]
+		ChatSumm --> UI2[UI: Chat + Evidence]
+	end
+
+	subgraph Synthetics
+		Prompt[NLP Prompt\n(optional draft)] --> Spec[LLM → DSL Spec]
+		Spec --> Runner[Playwright Runner]
+		Runner --> Runs[(Runs + Screenshots)]
+		Runs --> UI3[UI: Synthetic Monitors]
+	end
+
+	UI1 -. unified server .- API[(Express Server)]
+	UI2 -. unified server .- API
+	UI3 -. unified server .- API
+```
+
+ASCII quick view (copy-friendly):
+```
+Probes --> In-Memory Store --> (optional) SQLite --> UI (SLIs / Traces)
+Logs  --> FTS5 + Embeddings --> RAG Retriever --> Chat Answer + Evidence --> UI
+Prompt -> LLM Spec Draft -> Playwright Runner -> Runs (JSON + screenshots) -> UI
+```
+
+Design notes:
+* The store is the live hot path; SQLite persistence is optional (enabled when `ENABLE_DB=1`).
+* Logs dual-indexed: lexical (FTS5) + semantic (embeddings) → hybrid scoring in retriever.
+* Direct metric intents & other smart shortcuts bypass LLM for deterministic answers.
+* Synthetic DSL kept minimal; spec can be drafted by LLM then human-edited before execution.
+* All features share a single Express process and static HTML/JS UI (no build step required).
+
+---
 ## Environment Variables
 Secrets (set via your platform’s secret manager; DO NOT commit real keys):
 - `OPENAI_API_KEY` – Needed for: embeddings indexing, AI summaries with LLM, synthetic draft, vector embedding.
