@@ -31,5 +31,6 @@
   "devDependencies": {
     "@types/express": "^4.17.21",
     "playwright": "^1.55.0"
-  }
+  },
+  "license": "GPL-3.0-only"
 }

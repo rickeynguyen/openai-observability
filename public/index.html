@@ -364,6 +364,7 @@
           </div>
           <div id="chatNarrative" style="display:none; margin-bottom:8px; font-size:13px; line-height:1.35"></div>
           <div id="chatAnswer" style="font-size:13px; line-height:1.35">—</div>
+          <div id="chatEvidence" style="display:none; margin-top:10px; font-size:11px;"></div>
           <div id="chatAnswerMeta" class="muted" style="font-size:11px; margin-top:6px;"></div>
           <div id="chatSwapHint" class="muted" style="font-size:11px; margin-top:4px; display:none;">Structured summary moved below.</div>
         </div>
@@ -620,6 +621,26 @@
     canvas.onmousemove=(e)=>{const rect=canvas.getBoundingClientRect();const x=e.clientX-rect.left;const rel=x/(w-1);const t=tMin+rel*(tMax-tMin);let nearest=null;for(const b of buckets){if(!nearest||Math.abs(b.t-t)<Math.abs(nearest.t-t)) nearest=b;}if(nearest){const v=nearest.p95!=null?nearest.p95.toFixed(0)+'ms':'—';if(hoverEl) hoverEl.textContent=new Date(nearest.t).toLocaleTimeString()+': p95 '+v;}};canvas.onmouseleave=()=>{if(hoverEl) hoverEl.textContent='';};}catch(e){/* ignore */}}
   // Probe interval dropdown logic
   async function initProbeInterval(){try{const r=await fetch('/config',{cache:'no-store'});if(!r.ok)return;const j=await r.json();const sel=document.getElementById('probeIntervalSelect');if(!sel)return;const cur=j && j.probe ? j.probe.intervalSec : 60; // set existing
+          // Evidence (grounding log snippets) for streaming final payload
+          try {
+            const evBox=document.getElementById('chatEvidence');
+            if(evBox){
+              const ev=Array.isArray(obj.evidence)?obj.evidence:[];
+              if(ev.length){
+                evBox.style.display='block';
+                evBox.innerHTML='<div style="font-weight:600;font-size:12px;margin-bottom:4px;">Evidence (logs)</div>'+ev.map(e=>{
+                  const dt=new Date(e.ts||Date.now()).toISOString();
+                  const meta=[dt,e.status||'',e.endpoint||'',e.model||'',e.region||''].filter(Boolean).join(' • ');
+                  const safe=(e.text||'').replace(/[<>]/g,'');
+                  return `<div class="ev-item" style="border:1px solid #243244;border-radius:6px;padding:6px;margin-bottom:6px;font-size:11px;">
+                    <div style="color:#9ca3af;margin-bottom:4px;">${meta} <button data-text="${safe.replace(/"/g,'&quot;')}" class="btn ev-copy" style="float:right;font-size:10px;padding:2px 6px;">Copy</button></div>
+                    <div style="white-space:pre-wrap;font-family:ui-monospace,monospace;">${safe}</div>
+                  </div>`;
+                }).join('');
+                evBox.querySelectorAll('.ev-copy').forEach(btn=>{btn.addEventListener('click',()=>{try{navigator.clipboard.writeText(btn.getAttribute('data-text')||'');btn.textContent='Copied';setTimeout(()=>{btn.textContent='Copy';},1100);}catch(_){}});});
+              } else { evBox.innerHTML=''; evBox.style.display='none'; }
+            }
+          }catch(_){ }
     if([...sel.options].some(o=>o.value==String(cur))) sel.value=String(cur);sel.addEventListener('change',async()=>{const nv=Number(sel.value);try{const resp=await fetch('/probe/interval',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({intervalSec:nv})});if(!resp.ok){sel.classList.add('bad');setTimeout(()=>sel.classList.remove('bad'),1200);} }catch(_){}});}catch(_){}}
   initProbeInterval();
   function download(filename,text){const blob=new Blob([text],{type:'text/plain'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),4000);}function setActiveTab(id){['viewSummary','viewTraces','viewChat','viewSynthetics'].forEach(x=>{const el=document.getElementById(x);if(el){if(x===id)el.classList.add('active');else el.classList.remove('active');}})}
@@ -1131,6 +1152,26 @@
             if (j.narrative) { const n=document.getElementById('chatNarrative'); if(n){ n.innerHTML = j.usedLLM ? mdToHtml(j.narrative) : mdEscapeHtml(j.narrative); n.style.display='block'; } }
           }
           if (j.usedLLM) { const b=document.getElementById('llmBadge'); if(b){ b.style.display='inline-block'; } }
+          // Evidence (grounding log snippets)
+          try {
+            const evBox=document.getElementById('chatEvidence');
+            if(evBox){
+              const ev=Array.isArray(j.evidence)?j.evidence:[];
+              if(ev.length){
+                evBox.style.display='block';
+                evBox.innerHTML='<div style="font-weight:600;font-size:12px;margin-bottom:4px;">Evidence (logs)</div>'+ev.map(e=>{
+                  const dt=new Date(e.ts||Date.now()).toISOString();
+                  const meta=[dt,e.status||'',e.endpoint||'',e.model||'',e.region||''].filter(Boolean).join(' • ');
+                  const safe=(e.text||'').replace(/[<>]/g,'');
+                  return `<div class="ev-item" style="border:1px solid #243244;border-radius:6px;padding:6px;margin-bottom:6px;font-size:11px;">
+                    <div style="color:#9ca3af;margin-bottom:4px;">${meta} <button data-text="${safe.replace(/"/g,'&quot;')}" class="btn ev-copy" style="float:right;font-size:10px;padding:2px 6px;">Copy</button></div>
+                    <div style="white-space:pre-wrap;font-family:ui-monospace,monospace;">${safe}</div>
+                  </div>`;
+                }).join('');
+                evBox.querySelectorAll('.ev-copy').forEach(btn=>{btn.addEventListener('click',()=>{try{navigator.clipboard.writeText(btn.getAttribute('data-text')||'');btn.textContent='Copied';setTimeout(()=>{btn.textContent='Copy';},1100);}catch(_){}});});
+              } else { evBox.innerHTML=''; evBox.style.display='none'; }
+            }
+          }catch(_){ }
           chatDiagramLastData = j.data || { tables: [] };
           drawChatDiagram(chatDiagramLastData);
           const metaEl=document.getElementById('chatAnswerMeta'); if(metaEl){
@@ -1145,7 +1186,7 @@
         finally { setChatLoading(false); }
       }
       document.getElementById('chatSend').addEventListener('click',chatSend);
-      document.getElementById('chatClear').addEventListener('click',()=>{document.getElementById('chatInput').value='';document.getElementById('chatAnswer').textContent='—';document.getElementById('chatCitations').textContent='—';});
+  document.getElementById('chatClear').addEventListener('click',()=>{document.getElementById('chatInput').value='';document.getElementById('chatAnswer').textContent='—';document.getElementById('chatCitations').textContent='—';const ev=document.getElementById('chatEvidence');if(ev){ev.innerHTML='';ev.style.display='none';}});
       document.getElementById('chatInput').addEventListener('keydown',e=>{if(e.key==='Enter'&& (e.metaKey||e.ctrlKey)){e.preventDefault();chatSend();}});
   function getKey(){
     try{

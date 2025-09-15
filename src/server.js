@@ -1232,6 +1232,38 @@ app.post('/ai/chat', async (req, res) => {
     const p50=q(lat,0.5), p95=q(lat,0.95), p99=q(lat,0.99);
     const byStatus = rows.reduce((acc,r)=>{ const k=String(r.status??(r.ok?200:0)); acc[k]=(acc[k]||0)+1; return acc; },{});
 
+    // --- Intent detection (direct metric Q&A) ---
+    // Slowest endpoint intent: user explicitly asks which endpoint is the slowest (latency focused question)
+    const lowerQ = String(userMsg||'').toLowerCase();
+    const slowestIntent = /(which|what)?\s*(is\s*)?(the\s*)?slow(est)?\s+endpoint/.test(lowerQ) || /slowest\s+endpoint/.test(lowerQ);
+    let directAnswer = null; let directIntent = null;
+    if (slowestIntent) {
+      // Group latencies by endpoint (successful calls only)
+      const groups = new Map();
+      for (const r of rows) {
+        if (!r.ok || typeof r.latencyMs !== 'number') continue;
+        const ep = r.endpoint || '(unknown)';
+        const arr = groups.get(ep) || []; arr.push(r.latencyMs); groups.set(ep, arr);
+      }
+      if (!groups.size) {
+        directAnswer = 'No successful requests in range.';
+      } else {
+        const quant = (arr,q)=>{ if(!arr.length) return 0; const a=arr.slice().sort((x,y)=>x-y); const pos=(a.length-1)*q; const b=Math.floor(pos); const rest=pos-b; return a[b+1]!==undefined ? a[b]+rest*(a[b+1]-a[b]) : a[b]; };
+        const stats = Array.from(groups.entries()).map(([ep,arr])=>({ ep, count: arr.length, p95: Math.round(quant(arr,0.95)||0), p99: Math.round(quant(arr,0.99)||0), p50: Math.round(quant(arr,0.50)||0) }));
+        // Require at least 2 samples to avoid single outlier noise
+        const eligible = stats.filter(s=>s.count>=2);
+        const ranking = (eligible.length?eligible:stats).sort((a,b)=> b.p95 - a.p95 || b.p99 - a.p99 || b.p50 - a.p50);
+        const top = ranking[0];
+        const second = ranking[1];
+        if (top) {
+          directAnswer = `Slowest endpoint (by p95) is ${top.ep} (p95 ${top.p95} ms, p99 ${top.p99} ms, samples ${top.count}).` + (second?` Next: ${second.ep} (p95 ${second.p95} ms).`: '');
+        } else {
+          directAnswer = 'Unable to determine slowest endpoint.';
+        }
+      }
+      directIntent = 'slowest_endpoint';
+    }
+
     // Logs: hybrid search (FTS + vectors when available)
     let logs = [];
     try {
@@ -1254,8 +1286,21 @@ app.post('/ai/chat', async (req, res) => {
       logs = fetchLogsByIds(db, ids);
     } catch {}
 
+    // Fallback: when DB disabled or no log rows found, synthesize pseudo-log entries from probe points
+    if (!logs.length) {
+      const probeLike = rows.slice(0, 20).map(r => ({
+        id: r.ts, // unique-ish per point
+        ts: r.ts,
+        endpoint: r.endpoint,
+        model: r.model,
+        region: r.region,
+        status: r.status || (r.ok ? 200 : null),
+        text: `${r.status|| (r.ok?200:'?')} ${r.endpoint} latency=${r.latencyMs}ms model=${r.model||''} region=${r.region||''}`.trim()
+      }));
+      logs = probeLike;
+    }
+
   // Intent detection
-  const lowerQ = String(userMsg||'').toLowerCase();
   const wantPopularityModel = /(most\s+(popular|used|common)|top\s+model|popular|populate)/.test(lowerQ);
   const wantJoke = /(\btell\b.*\bjoke\b|\bjoke\b|\bfunny\b|\blaugh\b)/.test(lowerQ);
 
@@ -1363,9 +1408,15 @@ app.post('/ai/chat', async (req, res) => {
       dataContext = { table: 'tokens_summary', title: 'Tokens' };
     }
 
-    let answer = wantPopularityModel
-      ? [popularityBlock, details.join(' • '), logSnippet].filter(Boolean).join('\n')
-      : [baseLine, details.join(' • '), logSnippet].filter(Boolean).join('\n');
+    let answer;
+    if (directIntent === 'slowest_endpoint' && directAnswer) {
+      // Short-circuit summary style for direct intent
+      answer = directAnswer;
+    } else {
+      answer = wantPopularityModel
+        ? [popularityBlock, details.join(' • '), logSnippet].filter(Boolean).join('\n')
+        : [baseLine, details.join(' • '), logSnippet].filter(Boolean).join('\n');
+    }
     // Build a friendly non-LLM narrative
     function buildNarrative(){
       const sliPct = (sli*100).toFixed(2);
@@ -1391,6 +1442,10 @@ app.post('/ai/chat', async (req, res) => {
     // Off-topic lightweight handling (no LLM): return a short, clean joke when explicitly asked
     if (!body.llm && wantJoke) {
       answer = "Why do programmers prefer dark mode? Because light attracts bugs.";
+    }
+    // If user requested LLM but the question is a direct deterministic metric intent, skip LLM to preserve concise answer
+    if (directIntent && body.llm) {
+      body.llm = false; // override to avoid verbose summarization
     }
 
   // Optional LLM enhancement when requested and configured
@@ -1525,6 +1580,16 @@ app.post('/ai/chat', async (req, res) => {
       }
     }
 
+    // Build evidence objects for grounding (up to 10 best logs)
+    const evidence = logs.slice(0,10).map(l=>({
+      id: l.id,
+      ts: l.ts,
+      endpoint: l.endpoint || null,
+      model: l.model || null,
+      region: l.region || null,
+      status: l.status || null,
+      text: (l.text||'').slice(0,400)
+    }));
     const citations = { logs: logs.map(l=>l.id), metrics: ['summary'] };
     const tokensTotal = rows.reduce((a,r)=>a+(r.tokensTotal||0),0);
     const tokensPrompt = rows.reduce((a,r)=>a+(r.tokensPrompt||0),0);
@@ -1543,9 +1608,9 @@ app.post('/ai/chat', async (req, res) => {
       { name:'lat_percentiles', rows: [['p50', p50||0], ['p95', p95||0], ['p99', p99||0]] },
       { name:'tokens_summary', rows: [['prompt', tokensPrompt], ['completion', tokensCompletion], ['total', tokensTotal]] }
   ].concat(dataTables), context: dataContext };
-  const narrative = (usedLLM && answer) ? answer : buildNarrative();
+  const narrative = (usedLLM && answer) ? answer : (directIntent==='slowest_endpoint' ? directAnswer : buildNarrative());
   // Expose debug routing metadata to help diagnose 400s on certain model families
-  res.json({ answer, narrative, citations, data, summary, usedLLM, llmModel, llmTried, llmStatus, llmRoute, llmFallback });
+  res.json({ answer, narrative, citations, evidence, data, summary, usedLLM, llmModel, llmTried, llmStatus, llmRoute, llmFallback });
   // Clients not using these fields can ignore; shape additive (non-breaking)
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -1596,8 +1661,45 @@ app.post('/ai/chat/stream', async (req, res) => {
       logs = fetchLogsByIds(db, ids);
     } catch {}
 
+    // Fallback pseudo-logs if none found (DB disabled or empty match)
+    if (!logs.length) {
+      logs = rows.slice(0, 20).map(r => ({
+        id: r.ts,
+        ts: r.ts,
+        endpoint: r.endpoint,
+        model: r.model,
+        region: r.region,
+        status: r.status || (r.ok?200:null),
+        text: `${r.status|| (r.ok?200:'?')} ${r.endpoint} latency=${r.latencyMs}ms model=${r.model||''} region=${r.region||''}`.trim()
+      }));
+    }
+
   // Build answer text (LLM optional, but contextual when LLM is off)
   const lowerQ = String(userMsg||'').toLowerCase();
+  // Direct metric intents
+  const slowestIntent = /(which|what)?\s*(is\s*)?(the\s*)?slow(est)?\s+endpoint/.test(lowerQ) || /slowest\s+endpoint/.test(lowerQ);
+  let directAnswer = null; let directIntent = null;
+  if (slowestIntent) {
+    const groups = new Map();
+    for (const r of rows) {
+      if (!r.ok || typeof r.latencyMs !== 'number') continue;
+      const ep = r.endpoint || '(unknown)';
+      const arr = groups.get(ep) || []; arr.push(r.latencyMs); groups.set(ep, arr);
+    }
+    if (!groups.size) {
+      directAnswer = 'No successful requests in range.';
+    } else {
+      const quant = (arr,q)=>{ if(!arr.length) return 0; const a=arr.slice().sort((x,y)=>x-y); const pos=(a.length-1)*q; const b=Math.floor(pos); const rest=pos-b; return a[b+1]!==undefined ? a[b]+rest*(a[b+1]-a[b]) : a[b]; };
+      const stats = Array.from(groups.entries()).map(([ep,arr])=>({ ep, count: arr.length, p95: Math.round(quant(arr,0.95)||0), p99: Math.round(quant(arr,0.99)||0), p50: Math.round(quant(arr,0.50)||0) }));
+      const eligible = stats.filter(s=>s.count>=2);
+      const ranking = (eligible.length?eligible:stats).sort((a,b)=> b.p95 - a.p95 || b.p99 - a.p99 || b.p50 - a.p50);
+      const top = ranking[0];
+      const second = ranking[1];
+      if (top) directAnswer = `Slowest endpoint (by p95) is ${top.ep} (p95 ${top.p95} ms, p99 ${top.p99} ms, samples ${top.count}).` + (second?` Next: ${second.ep} (p95 ${second.p95} ms).`: '');
+      else directAnswer = 'Unable to determine slowest endpoint.';
+    }
+    directIntent = 'slowest_endpoint';
+  }
   const wantPopularityModel = /(most\s+(popular|used|common)|top\s+model|popular|populate)/.test(lowerQ);
   const wantJoke = /(\btell\b.*\bjoke\b|\bjoke\b|\bfunny\b|\blaugh\b)/.test(lowerQ);
   const topStatuses = Object.entries(byStatus).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([k,v])=>`${k}:${v}`).join(', ');
@@ -1686,12 +1788,21 @@ app.post('/ai/chat/stream', async (req, res) => {
     dataContext = { table: 'tokens_summary', title: 'Tokens' };
   }
 
-  let answer = wantPopularityModel
-    ? [popularityBlock, details.join(' • '), logSnippet].filter(Boolean).join('\n')
-    : [baseLine, details.join(' • '), logSnippet].filter(Boolean).join('\n');
+  let answer;
+  if (directIntent==='slowest_endpoint' && directAnswer) {
+    answer = directAnswer;
+  } else {
+    answer = wantPopularityModel
+      ? [popularityBlock, details.join(' • '), logSnippet].filter(Boolean).join('\n')
+      : [baseLine, details.join(' • '), logSnippet].filter(Boolean).join('\n');
+  }
   const useLLM = body.llm === true && !!process.env.OPENAI_API_KEY;
   if (!useLLM && wantJoke) {
     answer = "Why do programmers prefer dark mode? Because light attracts bugs.";
+  }
+  if (directIntent && useLLM) {
+    // Suppress LLM for deterministic direct intent
+    body.llm = false;
   }
   let usedLLM = false;
   let llmModel = null; let llmTried = false; let llmStatus = null;
@@ -1813,7 +1924,7 @@ app.post('/ai/chat/stream', async (req, res) => {
 
     function write(obj){ try { res.write(JSON.stringify(obj)+'\n'); } catch(_){} }
     // Stream in small chunks (words) so UI updates progressively
-    const parts = String(answer).split(/(\s+)/); // keep whitespace
+  const parts = String(answer).split(/(\s+)/); // keep whitespace
     for (const p of parts) write({ delta: p });
     const citations = { logs: logs.map(l=>l.id), metrics: ['summary'] };
     const tokensTotal = rows.reduce((a,r)=>a+(r.tokensTotal||0),0);
@@ -1854,7 +1965,17 @@ app.post('/ai/chat/stream', async (req, res) => {
       { name:'lat_percentiles', rows: [['p50', p50||0], ['p95', p95||0], ['p99', p99||0]] },
       { name:'tokens_summary', rows: [['prompt', tokensPrompt], ['completion', tokensCompletion], ['total', tokensTotal]] }
   ].concat(dataTables), context: dataContext };
-  write({ done: true, citations, data, summary, narrative: usedLLM ? answer : buildNarrative(), usedLLM, llmModel, llmTried, llmStatus, llmRoute, llmFallback });
+    // Evidence objects (up to 10) mirroring non-stream endpoint
+    const evidence = logs.slice(0,10).map(l=>({
+      id: l.id,
+      ts: l.ts,
+      endpoint: l.endpoint || null,
+      model: l.model || null,
+      region: l.region || null,
+      status: l.status || null,
+      text: (l.text||'').slice(0,400)
+    }));
+    write({ done: true, citations, evidence, data, summary, narrative: usedLLM ? answer : buildNarrative(), usedLLM, llmModel, llmTried, llmStatus, llmRoute, llmFallback });
     try { res.end(); } catch(_){}
   } catch (e) {
     console.error('[ai/chat/stream] failed', e);

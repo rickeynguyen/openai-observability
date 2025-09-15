@@ -10,6 +10,8 @@ Single-process Node.js service + lightweight HTML UI that gives you:
 | Log Ingestion & Search (FTS + Embeddings) | ✅ | Set `ENABLE_AI=1`, embeddings optional |
 | Embedding Similarity + Hybrid Search | ✅ | Vector store in SQLite (blob) + FTS5 |
 | Chat / AI Summaries | ✅ | Local heuristic or OpenAI Responses API when key provided |
+| Chat Grounding Evidence | ✅ | Source log snippets surfaced with each answer |
+| Direct Metric Intents | ✅ | e.g. "slowest endpoint" returns concise deterministic answer |
 | Synthetic Browser Monitors | ✅ | Playwright (screenshots, steps, schedules) |
 | Auth (simple key) for ingestion & ops | ✅ | `INGEST_API_KEY` header check |
 | Deployment (Docker, Render, Fly) | ✅ | `render.yaml` & `fly.toml` samples |
@@ -115,6 +117,31 @@ Chat UI usage:
 2. Optionally start simulator & auto-index.
 3. Toggle “Use LLM” to include model-based enhancement; off = local summarizer only.
 
+### Grounding / Evidence (RAG Transparency)
+Every chat answer now includes an evidence panel listing up to 10 log snippets (FTS/vector ranked; falls back to recent probe points when DB disabled). Each snippet shows timestamp, status, endpoint, model & region plus the original log text (truncated to 400 chars). Copy buttons let you inspect or export raw context. This:
+- Boosts trust (auditable sources → reduced hallucination risk)
+- Makes it easy to pivot from narrative → specific raw events
+- Works in both standard and streaming modes (stream emits evidence on final line)
+
+Disable (if desired) by hiding the UI container (`#chatEvidence`) or filtering evidence client-side; server response is additive/backwards compatible.
+
+### Direct Metric Intents (Smart Shortcuts)
+Certain plain-English questions short‑circuit the generic reliability summary and produce a precise, deterministic answer (and skip LLM even if enabled) for speed and clarity.
+
+Currently implemented:
+
+| Intent | Sample Phrases | Output Style |
+|--------|----------------|--------------|
+| Slowest Endpoint | `which is the slowest endpoint?`, `slowest endpoint please`, `what's the slowest endpoint` | `Slowest endpoint (by p95) is /v1/files (p95 1487 ms, p99 1510 ms, samples 42). Next: /v1/chat/completions (p95 910 ms).` |
+
+Behavior notes:
+- Ranks by p95 latency (ties broken by p99 then p50) over successful calls in the selected time window.
+- Prefers endpoints with ≥2 samples; falls back to single-sample if necessary.
+- Streams token-by-token (streaming endpoint) but still emits full structured `summary`, `data`, and `evidence` objects for charts and grounding.
+- LLM use is suppressed for these intents to avoid verbose paraphrasing.
+
+Planned (open an issue to prioritize): top errors, highest error-rate endpoint, most used model (already partially handled), peak token usage, rate limiting hotspots.
+
 ---
 ## Synthetic Browser Monitors
 Create / edit synthetic tests inline or draft via LLM.
@@ -208,7 +235,7 @@ Uses Node built-in test runner for core logic (extend as needed).
 
 ---
 ## License
-MIT (see `LICENSE`). Contributions welcome – please open an issue or PR.
+GPL-3.0 (see `LICENSE`). Contributions welcome – please open an issue or PR. By submitting a contribution you agree to license your work under the same license. If you intended a more permissive license (e.g. MIT) open an issue to discuss before large changes.
 
 ---
 ## At a Glance

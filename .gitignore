@@ -42,3 +42,6 @@ data.db-shm
 data.db-wal
 *.sqlite
 *.sqlite-journal
+
+# Copilot instructions
+*_instruction.md
