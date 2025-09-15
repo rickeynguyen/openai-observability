@@ -52,9 +52,10 @@ if (process.env.NODE_ENV !== 'test' && enableDb) {
             // Add to in-memory list & schedule state
             synthMonitors.push({ id, name: defaultSpec.name, spec: defaultSpec, createdAt: Date.now() });
             const mins = 1; // every_1m
-            // Schedule immediate first run (next scheduler tick) instead of waiting full interval
-            synthScheduleState.set(id, { nextDueAt: Date.now() });
-            console.log('[synth] seeded default ChatGPT synthetic monitor id='+id+' (first run asap)');
+            // Schedule first interval ahead so initial UI shows a countdown; still run immediately below.
+            const firstIntervalMs = mins*60000;
+            synthScheduleState.set(id, { nextDueAt: Date.now() + firstIntervalMs });
+            console.log('[synth] seeded default ChatGPT synthetic monitor id='+id+' (immediate run + scheduled)');
             // Kick off an immediate first run (fire and forget) so Recent Runs populates quickly
             (async ()=>{
               try {
@@ -65,7 +66,7 @@ if (process.env.NODE_ENV !== 'test' && enableDb) {
                 const rec = { id: runId, monitorId: id, startedAt, finishedAt: Date.now(), ok: !!result.ok, statusText: result.statusText||'', screenshot: result.screenshot||null, logs: result.logs||[], steps: result.steps||[] };
                 synthRuns.unshift(rec);
                 if (db){ try { const { insertSynthRun } = await import('./db.js'); insertSynthRun(db, rec); } catch(_){ } }
-                // Schedule next according to interval
+                // Schedule next according to interval (refresh even though already set ahead)
                 synthScheduleState.set(id, { nextDueAt: Date.now() + mins*60000 });
               } catch(e){
                 const runId = synthRunNextId++;
@@ -507,8 +508,9 @@ if (!db) {
       const id = synthNextId++;
       synthMonitors.push({ id, name: defaultSpec.name, spec: defaultSpec, createdAt: Date.now() });
   // Schedule immediate first run
-      synthScheduleState.set(id, { nextDueAt: Date.now() });
-      console.log('[synth] seeded in-memory default ChatGPT synthetic monitor id='+id+' (first run asap)');
+  // Schedule first interval ahead for countdown; immediate run will still populate runs table quickly.
+  synthScheduleState.set(id, { nextDueAt: Date.now() + 60000 });
+  console.log('[synth] seeded in-memory default ChatGPT synthetic monitor id='+id+' (immediate run + scheduled)');
       // Immediate first run (in-memory mode)
       (async ()=>{
         try {

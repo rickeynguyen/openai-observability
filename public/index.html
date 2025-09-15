@@ -831,8 +831,37 @@
   let synthTimer=null; function startSynthTimer(){ if(synthTimer) return; synthTimer=setInterval(()=>{ const vis=document.getElementById('syntheticsContainer').style.display!=='none'; if(vis){ loadSynthMonitors(); loadSynthRuns(); } },7000); }
   function stopSynthTimer(){ if(synthTimer){ clearInterval(synthTimer); synthTimer=null; } }
   // Countdown logic
-  let countdownTimer=null; function tickCountdown(){ const now=Date.now(); document.querySelectorAll('[data-countdown]').forEach(td=>{ const ts=Number(td.getAttribute('data-countdown')); if(!ts){ td.textContent=''; return; } const diff=ts-now; if(diff<=0){ td.textContent='due'; return; } const s=Math.floor(diff/1000); const m=Math.floor(s/60); const rem=s%60; td.textContent= m>0 ? `${m}m ${rem}s` : `${rem}s`; }); }
-  function updateCountdowns(){ if(!countdownTimer){ countdownTimer=setInterval(()=>{ const vis=document.getElementById('syntheticsContainer').style.display!=='none'; if(!vis) return; tickCountdown(); },1000);} tickCountdown(); }
+  // Hardened countdown logic with visibility + existence guards
+  let countdownTimer=null;
+  function tickCountdown(){
+    try {
+      const container=document.getElementById('syntheticsContainer');
+      if(!container || container.style.display==='none') return; // skip when hidden / absent
+      const now=Date.now();
+      document.querySelectorAll('[data-countdown]').forEach(td=>{
+        if(!td) return;
+        const raw=td.getAttribute('data-countdown');
+        if(!raw){ td.textContent=''; return; }
+        const ts=Number(raw);
+        if(!ts){ td.textContent=''; return; }
+        const diff=ts-now;
+        if(diff<=0){ td.textContent='due'; return; }
+        const s=Math.floor(diff/1000);
+        const m=Math.floor(s/60);
+        const rem=s%60;
+        td.textContent= m>0 ? `${m}m ${rem}s` : `${rem}s`;
+      });
+    } catch(e){ /* swallow to avoid UI crash */ }
+  }
+  function updateCountdowns(){
+    // schedule interval only once
+    if(!countdownTimer){
+      countdownTimer=setInterval(()=>{ tickCountdown(); },1000);
+    }
+    // initial paint next frame for smoother UI
+    if(window.requestAnimationFrame){ requestAnimationFrame(()=>tickCountdown()); }
+    else tickCountdown();
+  }
   function stopCountdowns(){ if(countdownTimer){ clearInterval(countdownTimer); countdownTimer=null; } }
   const btnSM=document.getElementById('refreshSynthMonitors'); if(btnSM) btnSM.addEventListener('click', loadSynthMonitors);
   const chkShowDel=document.getElementById('showDeletedSynth'); if(chkShowDel) chkShowDel.addEventListener('change', loadSynthMonitors);
@@ -844,7 +873,24 @@
   document.getElementById('exportTraceJson').addEventListener('click',()=>exportTrace('json'));
   document.getElementById('exportTraceAllCsv').addEventListener('click',()=>exportAllTraces('csv'));
   document.getElementById('exportTraceAllJson').addEventListener('click',()=>exportAllTraces('json'));
-  document.getElementById('traceHeaderRow').addEventListener('click',ev=>{const th=ev.target.closest('th');if(!th||!th.dataset.k)return;const k=th.dataset.k;if(traceState.sort.key===k){traceState.sort.dir=traceState.sort.dir==='asc'?'desc':'asc';}else{traceState.sort.key=k;traceState.sort.dir='asc';}load(false);});
+  // Guard trace header sort binding (prevent null deref errors)
+  (function(){
+    const hdr=document.getElementById('traceHeaderRow');
+    if(!hdr){ console.debug('[ui] traceHeaderRow not found at init (delayed render?)'); return; }
+    hdr.addEventListener('click',ev=>{
+      try {
+        const th=ev.target.closest('th');
+        if(!th || !th.dataset || !th.dataset.k) return;
+        const k=th.dataset.k;
+        if(traceState.sort.key===k){
+          traceState.sort.dir=traceState.sort.dir==='asc'?'desc':'asc';
+        } else {
+          traceState.sort.key=k; traceState.sort.dir='asc';
+        }
+        load(false);
+      } catch(e){ /* ignore */ }
+    });
+  })();
       // Chat actions
   function drawChatBarChart(canvas, labels, values){
         if(!canvas) return;
