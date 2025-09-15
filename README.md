@@ -65,35 +65,26 @@ High-level data flow for the three core lanes (metrics, logs/RAG, synthetics):
 
 ```mermaid
 flowchart LR
-	%% Metrics lane
-	subgraph Metrics_SLI
-		P[Probes (chat, responses, ...)] --> MStore[(In-Memory Store)]
-		MStore -->|ring buffer flush| SQLite[(SQLite)]
-		MStore --> UI1[UI: Charts & SLIs]
-		SQLite --> UI1
-	end
+  P[Probes] --> MS[(Memory Store)]
+  MS --> DB[(SQLite)]
+  MS --> UI1[SLI UI]
+  DB --> UI1
 
-	%% Logs + RAG lane
-	subgraph Logs_RAG
-		LIngest[Log Ingest (raw + sim)] --> FTS[(FTS5 Index)]
-		LIngest --> VEC[(Embeddings Vector Store)]
-		FTS --> RAG[Retriever]
-		VEC --> RAG
-		RAG --> ChatSumm[Chat Answer]
-		ChatSumm --> UI2[UI: Chat + Evidence]
-	end
+  LOGS[Log Ingest] --> FTS[(FTS5)]
+  LOGS --> VEC[(Embeddings)]
+  FTS --> RET[Retriever]
+  VEC --> RET
+  RET --> CHAT[Chat Answer]
+  CHAT --> UI2[Chat UI]
 
-	%% Synthetics lane
-	subgraph Synthetics
-		Prompt[Prompt (optional)] --> Spec[LLM Draft Spec]
-		Spec --> Runner[Playwright Runner]
-		Runner --> Runs[(Runs + Screenshots)]
-		Runs --> UI3[UI: Synthetic Monitors]
-	end
+  PROMPT[Prompt] --> SPEC[Spec]
+  SPEC --> RUN[Runner]
+  RUN --> RUNS[(Runs)]
+  RUNS --> UI3[Synth UI]
 
-	UI1 -. unified server .- API[(Express Server)]
-	UI2 -. unified server .- API
-	UI3 -. unified server .- API
+  UI1 --> API[(Server)]
+  UI2 --> API
+  UI3 --> API
 ```
 
 ASCII quick view (copy-friendly):
