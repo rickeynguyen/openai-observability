@@ -30,6 +30,36 @@ if (process.env.NODE_ENV !== 'test' && enableDb) {
   try { dbMod.ensureSynthSchema?.(db); } catch(e) { console.warn('[db] synth schema init failed', e.message); }
   // Logging helper initialized below; temporary console fallback will be replaced once log object defined
   console.log('[db] sqlite ready');
+    // Seed default synthetic monitor if none exist yet
+    try {
+      const { listSynthMonitors, insertSynthMonitor } = dbMod;
+      if (listSynthMonitors && insertSynthMonitor) {
+        const existing = listSynthMonitors(db);
+        const hasNonDeleted = existing.some(r => !r.deleted);
+        if (!hasNonDeleted) {
+          const defaultSpec = {
+            name: 'ChatGPT Synthetic Test',
+            schedule: 'every_1m',
+            startUrl: 'https://chatgpt.com',
+            timeoutMs: 20000,
+            steps: [
+              { action: 'goto', url: 'https://chatgpt.com', enter: false, any: false, soft: false },
+              { action: 'asserttextcontains', selector: 'body', text: '', enter: false, any: true, soft: false }
+            ]
+          };
+          try {
+            const id = insertSynthMonitor(db, { name: defaultSpec.name, spec: defaultSpec, schedule: defaultSpec.schedule, createdAt: Date.now() });
+            // Add to in-memory list & schedule state
+            synthMonitors.push({ id, name: defaultSpec.name, spec: defaultSpec, createdAt: Date.now() });
+            const mins = 1; // every_1m
+            synthScheduleState.set(id, { nextDueAt: Date.now() + mins*60000 });
+            console.log('[synth] seeded default ChatGPT synthetic monitor id='+id);
+          } catch (seedErr) {
+            console.warn('[synth] seed default monitor failed', seedErr.message);
+          }
+        }
+      }
+    } catch(seedOuterErr){ console.warn('[synth] seed check failed', seedOuterErr.message); }
   } catch (e) {
   dbInitError = e;
   console.warn('[db] sqlite init failed', e.message);
@@ -436,6 +466,30 @@ let synthRunNextId = 1;
 const SCHEDULE_MINUTES = { manual:0, every_1m:1, every_5m:5, every_10m:10, every_15m:15, every_30m:30, hourly:60 };
 const synthScheduleState = new Map(); // id -> { nextDueAt:number }
 const synthRunning = new Set();
+
+// Seed default synthetic monitor when DB is disabled (in-memory only). When DB is enabled, seeding
+// occurs earlier in the DB init block to allow persistence. Guard against duplicate seeding.
+if (!db) {
+  try {
+    const already = synthMonitors.some(m => /ChatGPT Synthetic Test/i.test(m.name||''));
+    if (!already) {
+      const defaultSpec = {
+        name: 'ChatGPT Synthetic Test',
+        schedule: 'every_1m',
+        startUrl: 'https://chatgpt.com',
+        timeoutMs: 20000,
+        steps: [
+          { action: 'goto', url: 'https://chatgpt.com', enter: false, any: false, soft: false },
+          { action: 'asserttextcontains', selector: 'body', text: '', enter: false, any: true, soft: false }
+        ]
+      };
+      const id = synthNextId++;
+      synthMonitors.push({ id, name: defaultSpec.name, spec: defaultSpec, createdAt: Date.now() });
+      synthScheduleState.set(id, { nextDueAt: Date.now() + 60000 });
+      console.log('[synth] seeded in-memory default ChatGPT synthetic monitor id='+id);
+    }
+  } catch(e){ console.warn('[synth] in-memory seed failed', e.message); }
+}
 
 // Small helpers to guard dynamic imports usage so earlier code referring to db.getSynthMonitor doesn't break
 // (Original code tried db.getSynthMonitor which was undefined; we now centralize access.)

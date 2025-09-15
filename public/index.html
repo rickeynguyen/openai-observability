@@ -737,7 +737,10 @@
           <td style="padding:6px;border-bottom:1px solid #243244;" data-next-ts="${m.nextDueAt||''}">${nextRun}</td>
           <td style="padding:6px;border-bottom:1px solid #243244;" data-countdown="${m.nextDueAt||''}">${m.nextDueAt? '—' : ''}</td>
           <td style="padding:6px;border-bottom:1px solid #243244;">${created} ${deletedBadge}</td>
-          <td style="padding:6px;border-bottom:1px solid #243244;">${ m.deleted ? `<button class='btn' data-restore-id='${m.id}'>Restore</button>` : `<button class=\"btn\" data-run-id=\"${m.id}\">Run</button> <button class=\"btn\" data-edit-id=\"${m.id}\">Edit</button>`}</td>`;
+          <td style="padding:6px;border-bottom:1px solid #243244;">${ m.deleted 
+            ? `<button class='btn' data-restore-id='${m.id}'>Restore</button>` 
+            : `<button class=\"btn\" data-run-id=\"${m.id}\">Run</button> <button class=\"btn\" data-edit-id=\"${m.id}\">Edit</button> <button class=\"btn btn-danger\" title=\"Delete monitor\" data-del-id=\"${m.id}\" style=\"padding:4px 6px;\">🗑️</button>`}
+          </td>`;
         tbody.appendChild(tr);
       });
       updateCountdowns?.();
@@ -774,6 +777,14 @@
         btn.addEventListener('click', async ()=>{
           const id=btn.getAttribute('data-edit-id');
           openEditMonitor(id);
+        });
+      });
+      // Delete buttons
+      tbody.querySelectorAll('button[data-del-id]').forEach(btn=>{
+        btn.addEventListener('click', async ()=>{
+          const id=btn.getAttribute('data-del-id');
+          if(!id) return; if(!confirm('Delete synthetic monitor #'+id+'?')) return;
+          try { const r=await fetch(`/synthetics/${id}`,{ method:'DELETE' }); if(!r.ok){ alert('Delete failed '+r.status); } else { loadSynthMonitors(); loadSynthRuns(); } } catch(_){ alert('Delete error'); }
         });
       });
       // Handle schedule changes
