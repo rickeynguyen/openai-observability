@@ -65,24 +65,27 @@ High-level data flow for the three core lanes (metrics, logs/RAG, synthetics):
 
 ```mermaid
 flowchart LR
-	subgraph Metrics/SLI
-		P[Probes\n(chat,responses,...)] --> MStore[(In-Memory Store)]
-		MStore -->|push & ring buffer| SQLite[(SQLite)]
-		MStore --> UI1[UI: Charts/SLIs]
+	%% Metrics lane
+	subgraph Metrics_SLI
+		P[Probes (chat, responses, ...)] --> MStore[(In-Memory Store)]
+		MStore -->|ring buffer flush| SQLite[(SQLite)]
+		MStore --> UI1[UI: Charts & SLIs]
 		SQLite --> UI1
 	end
 
-	subgraph Logs & RAG
-		LIngest[Logs Ingest\n/ logs + sim] --> FTS[(FTS5 Index)]
-		LIngest --> VEC[(Embeddings\nVector Store)]
+	%% Logs + RAG lane
+	subgraph Logs_RAG
+		LIngest[Log Ingest (raw + sim)] --> FTS[(FTS5 Index)]
+		LIngest --> VEC[(Embeddings Vector Store)]
 		FTS --> RAG[Retriever]
 		VEC --> RAG
-		RAG --> ChatSumm[Chat Answer Builder]
+		RAG --> ChatSumm[Chat Answer]
 		ChatSumm --> UI2[UI: Chat + Evidence]
 	end
 
+	%% Synthetics lane
 	subgraph Synthetics
-		Prompt[NLP Prompt\n(optional draft)] --> Spec[LLM → DSL Spec]
+		Prompt[Prompt (optional)] --> Spec[LLM Draft Spec]
 		Spec --> Runner[Playwright Runner]
 		Runner --> Runs[(Runs + Screenshots)]
 		Runs --> UI3[UI: Synthetic Monitors]
