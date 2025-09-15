@@ -12,6 +12,7 @@
       .k{color:#93c5fd}.v{color:#e5e7eb}.ok{color:#34d399}.bad{color:#fb7185}
       table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid #1f2937;padding:6px 8px;text-align:left;font-size:13px}
       .muted{color:#9ca3af}.pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#1f2937}
+  .badge-default{display:inline-block;margin-left:6px;padding:2px 6px;border-radius:6px;background:#334155;color:#93c5fd;font-size:10px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;border:1px solid #475569}
       footer{margin-top:32px;font-size:12px;color:#6b7280}
       th[data-k]{cursor:pointer}
   /* High-contrast nav buttons */
@@ -730,8 +731,10 @@
           <option value="hourly" ${sched==='hourly'?'selected':''}>hourly</option>
         </select>`;
         const deletedBadge = m.deleted? '<span class="pill" style="background:#475569;color:#e2e8f0;">deleted</span>' : '';
+        const isDefault = /ChatGPT Synthetic Test/i.test(m.name||'') || m.id===1;
+        const nameCell = `${m.name||m.spec?.name||''}${isDefault? '<span class="badge-default" title="Seeded default monitor">default</span>':''}`;
         tr.innerHTML=`<td style="padding:6px;border-bottom:1px solid #243244;">${m.id}</td>
-          <td style="padding:6px;border-bottom:1px solid #243244;">${m.name||m.spec?.name||''}</td>
+          <td style="padding:6px;border-bottom:1px solid #243244;">${nameCell}</td>
           <td style="padding:6px;border-bottom:1px solid #243244;">${schedSel}</td>
           <td style="padding:6px;border-bottom:1px solid #243244;">${lastRun}</td>
           <td style="padding:6px;border-bottom:1px solid #243244;" data-next-ts="${m.nextDueAt||''}">${nextRun}</td>

@@ -52,8 +52,29 @@ if (process.env.NODE_ENV !== 'test' && enableDb) {
             // Add to in-memory list & schedule state
             synthMonitors.push({ id, name: defaultSpec.name, spec: defaultSpec, createdAt: Date.now() });
             const mins = 1; // every_1m
-            synthScheduleState.set(id, { nextDueAt: Date.now() + mins*60000 });
-            console.log('[synth] seeded default ChatGPT synthetic monitor id='+id);
+            // Schedule immediate first run (next scheduler tick) instead of waiting full interval
+            synthScheduleState.set(id, { nextDueAt: Date.now() });
+            console.log('[synth] seeded default ChatGPT synthetic monitor id='+id+' (first run asap)');
+            // Kick off an immediate first run (fire and forget) so Recent Runs populates quickly
+            (async ()=>{
+              try {
+                const runId = synthRunNextId++;
+                const startedAt = Date.now();
+                synthRunning.add(id);
+                const result = await runSyntheticMonitor(defaultSpec, runId);
+                const rec = { id: runId, monitorId: id, startedAt, finishedAt: Date.now(), ok: !!result.ok, statusText: result.statusText||'', screenshot: result.screenshot||null, logs: result.logs||[], steps: result.steps||[] };
+                synthRuns.unshift(rec);
+                if (db){ try { const { insertSynthRun } = await import('./db.js'); insertSynthRun(db, rec); } catch(_){ } }
+                // Schedule next according to interval
+                synthScheduleState.set(id, { nextDueAt: Date.now() + mins*60000 });
+              } catch(e){
+                const runId = synthRunNextId++;
+                const rec = { id: runId, monitorId: id, startedAt: Date.now(), finishedAt: Date.now(), ok:false, statusText:'seed_run_failed', screenshot:null, logs:[{ ts: Date.now(), msg: String(e?.message||e) }], steps: [] };
+                synthRuns.unshift(rec);
+                if (db){ try { const { insertSynthRun } = await import('./db.js'); insertSynthRun(db, rec); } catch(_){ } }
+                synthScheduleState.set(id, { nextDueAt: Date.now() + mins*60000 });
+              } finally { synthRunning.delete(id); }
+            })();
           } catch (seedErr) {
             console.warn('[synth] seed default monitor failed', seedErr.message);
           }
@@ -485,8 +506,26 @@ if (!db) {
       };
       const id = synthNextId++;
       synthMonitors.push({ id, name: defaultSpec.name, spec: defaultSpec, createdAt: Date.now() });
-      synthScheduleState.set(id, { nextDueAt: Date.now() + 60000 });
-      console.log('[synth] seeded in-memory default ChatGPT synthetic monitor id='+id);
+  // Schedule immediate first run
+      synthScheduleState.set(id, { nextDueAt: Date.now() });
+      console.log('[synth] seeded in-memory default ChatGPT synthetic monitor id='+id+' (first run asap)');
+      // Immediate first run (in-memory mode)
+      (async ()=>{
+        try {
+          const runId = synthRunNextId++;
+          const startedAt = Date.now();
+          synthRunning.add(id);
+          const result = await runSyntheticMonitor(defaultSpec, runId);
+          const rec = { id: runId, monitorId: id, startedAt, finishedAt: Date.now(), ok: !!result.ok, statusText: result.statusText||'', screenshot: result.screenshot||null, logs: result.logs||[], steps: result.steps||[] };
+          synthRuns.unshift(rec);
+          synthScheduleState.set(id, { nextDueAt: Date.now() + 60000 });
+        } catch(e){
+          const runId = synthRunNextId++;
+          const rec = { id: runId, monitorId: id, startedAt: Date.now(), finishedAt: Date.now(), ok:false, statusText:'seed_run_failed', screenshot:null, logs:[{ ts: Date.now(), msg: String(e?.message||e) }], steps: [] };
+          synthRuns.unshift(rec);
+          synthScheduleState.set(id, { nextDueAt: Date.now() + 60000 });
+        } finally { synthRunning.delete(id); }
+      })();
     }
   } catch(e){ console.warn('[synth] in-memory seed failed', e.message); }
 }
@@ -998,7 +1037,7 @@ async function runSyntheticMonitor(spec, runId){
             secure: !!c.secure,
             sameSite: c.sameSite || undefined
           })).filter(k=>k.name && k.value && k.domain);
-          if (toAdd.length){ log(`auth: add ${toAdd.length} cookie(s)`); await ctx.addCookies(toAdd); }
+          if (toAdd.length){ logSynth(`auth: add ${toAdd.length} cookie(s)`); await ctx.addCookies(toAdd); }
         }
       }catch(_){ }
       const page = await ctx.newPage();
@@ -1008,7 +1047,7 @@ async function runSyntheticMonitor(spec, runId){
       try {
         if(startUrl){
           const t0 = Date.now();
-          log(`goto ${startUrl}`);
+          logSynth(`goto ${startUrl}`);
           try { await page.goto(startUrl, { timeout }); stepsMeta.push({ action:'goto', url:startUrl, ms: Date.now()-t0, ok:true }); }
           catch(e){ stepsMeta.push({ action:'goto', url:startUrl, ms: Date.now()-t0, ok:false, error:String(e?.message||e) }); throw e; }
         }
@@ -1019,11 +1058,11 @@ async function runSyntheticMonitor(spec, runId){
           currentStep = { action, selector: step.selector, url: step.url };
           currentStart = Date.now();
           try {
-            if (action === 'goto' && step.url){ log(`goto ${step.url}`); await page.goto(step.url, { timeout: t }); }
-            else if (action === 'click' && step.selector){ log(`click ${step.selector}`); await page.click(step.selector, { timeout: t }); }
-            else if (action === 'type' && step.selector){ log(`type ${step.selector} ← ${step.text||''}`); await page.fill(step.selector, String(step.text||''), { timeout: t }); if(step.enter){ await page.keyboard.press('Enter'); } }
-            else if (action === 'waitfor' && step.selector){ log(`waitFor ${step.selector}`); await page.waitForSelector(step.selector, { timeout: t }); }
-            else if (action === 'wait' && step.ms){ const w=Math.min(step.ms, 120000); log(`wait ${w}ms`); await page.waitForTimeout(w); }
+            if (action === 'goto' && step.url){ logSynth(`goto ${step.url}`); await page.goto(step.url, { timeout: t }); }
+            else if (action === 'click' && step.selector){ logSynth(`click ${step.selector}`); await page.click(step.selector, { timeout: t }); }
+            else if (action === 'type' && step.selector){ logSynth(`type ${step.selector} ← ${step.text||''}`); await page.fill(step.selector, String(step.text||''), { timeout: t }); if(step.enter){ await page.keyboard.press('Enter'); } }
+            else if (action === 'waitfor' && step.selector){ logSynth(`waitFor ${step.selector}`); await page.waitForSelector(step.selector, { timeout: t }); }
+            else if (action === 'wait' && step.ms){ const w=Math.min(step.ms, 120000); logSynth(`wait ${w}ms`); await page.waitForTimeout(w); }
             else if (action === 'asserttextcontains'){
               const sel = step.selector || 'body';
               const txt = String(step.text||'').toLowerCase();
@@ -1038,19 +1077,19 @@ async function runSyntheticMonitor(spec, runId){
                   lastContent = String(content||'');
                   ok = txt ? lastContent.toLowerCase().includes(txt) : !!lastContent;
                 }catch(err){ lastContent=''; ok=false; }
-                if(ok) { log(`assertTextContains ${sel} ✓ after ${attempt} attempt(s)`); break; }
-                if (retryBudget && Date.now() < deadline){ log(`assert retry ${sel} attempt=${attempt}`); await page.waitForTimeout(poll); continue; }
+                if(ok) { logSynth(`assertTextContains ${sel} ✓ after ${attempt} attempt(s)`); break; }
+                if (retryBudget && Date.now() < deadline){ logSynth(`assert retry ${sel} attempt=${attempt}`); await page.waitForTimeout(poll); continue; }
                 break;
               }
               if(!ok){
-                if(step.soft){ log(`soft assert failed ${sel} missing '${txt}'`); }
+                if(step.soft){ logSynth(`soft assert failed ${sel} missing '${txt}'`); }
                 else { throw new Error('assert_failed'); }
               }
             }
             stepsMeta.push({ ...currentStep, ms: Date.now()-currentStart, ok:true });
           } catch(innerErr){
             stepError = innerErr; recordedFail=true;
-            log('step error: '+String(innerErr?.message||innerErr));
+            logSynth('step error: '+String(innerErr?.message||innerErr));
             stepsMeta.push({ ...currentStep, ms: Date.now()-currentStart, ok:false, error:String(innerErr?.message||innerErr) });
             break; // stop processing further steps
           }
@@ -1059,21 +1098,21 @@ async function runSyntheticMonitor(spec, runId){
         if(!stepError) stepError = err; // already logged inside loop
       }
       // Always attempt screenshot even if a step failed
-      try { await page.screenshot({ path: fileAbs, fullPage: true }); } catch(ssErr){ log('screenshot failed: '+String(ssErr?.message||ssErr)); }
+  try { await page.screenshot({ path: fileAbs, fullPage: true }); } catch(ssErr){ logSynth('screenshot failed: '+String(ssErr?.message||ssErr)); }
       await browser.close();
       if (stepError){
         return { ok:false, statusText: String(stepError?.message||'failed'), screenshot: '/'+fileRel, logs, steps: stepsMeta };
       }
       return { ok: true, statusText: 'ok', screenshot: '/'+fileRel, logs, steps: stepsMeta };
     } else {
-      log('playwright not available – using HTTP fallback (no screenshot)');
+  logSynth('playwright not available – using HTTP fallback (no screenshot)');
     }
-  } catch(e){ log('playwright failed: '+String(e?.message||e)); }
+  } catch(e){ logSynth('playwright failed: '+String(e?.message||e)); }
   // Fallback: simple HTTP fetch
   try{
     const startUrl = spec.startUrl || (spec.steps.find(s=>String(s.action||'').toLowerCase()==='goto')?.url) || '';
     if (!startUrl) return { ok:false, statusText:'no_url', logs };
-    log(`fetch ${startUrl}`);
+  logSynth(`fetch ${startUrl}`);
     // Build headers from auth (including Cookie if cookies provided)
     const hdrs = (spec?.auth?.headers && typeof spec.auth.headers === 'object') ? { ...spec.auth.headers } : {};
     try{
@@ -1087,9 +1126,9 @@ async function runSyntheticMonitor(spec, runId){
     const statusNum = r.status;
     const text = await r.text();
     if (statusNum >= 400) {
-      log(`http status ${statusNum}`);
+  logSynth(`http status ${statusNum}`);
       const snippet = text.slice(0,300).replace(/\s+/g,' ').trim();
-      if (snippet) log(`body: ${snippet}`);
+  if (snippet) logSynth(`body: ${snippet}`);
     }
     const assertStep = spec.steps.find(s=>String(s.action||'').toLowerCase()==='asserttextcontains');
     if (assertStep && assertStep.text) {
@@ -1097,7 +1136,7 @@ async function runSyntheticMonitor(spec, runId){
       return { ok, statusText: ok?'ok':'assert_failed', screenshot:null, logs };
     }
     return { ok: r.ok, statusText: String(statusNum), screenshot:null, logs, steps: stepsMeta };
-  }catch(e){ log('fetch failed: '+String(e?.message||e)); return { ok:false, statusText:'fetch_failed', screenshot:null, logs, steps: stepsMeta }; }
+  }catch(e){ logSynth('fetch failed: '+String(e?.message||e)); return { ok:false, statusText:'fetch_failed', screenshot:null, logs, steps: stepsMeta }; }
 }
 
 // Simple scheduler loop for synthetic monitors
